@@ -1,0 +1,12 @@
+#lang shplait/liquid
+
+// Refinement on a polymorphic argument.  The element type is a type
+// variable; the list-level refinement is opaque.
+
+fun my_first({xs :: Listof(?a) | true}) :: ?a:
+  match xs
+  | cons(h, _): h
+  | []: error(#'my_first, "empty list")
+
+my_first([10, 20, 30])
+my_first(["a", "b"])

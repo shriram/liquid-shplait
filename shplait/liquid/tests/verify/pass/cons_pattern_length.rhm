@@ -1,0 +1,8 @@
+#lang shplait/liquid
+// A `cons(y, ys)` pattern on a list tells the checker that the list is
+// one longer than `ys`.
+
+fun count_down({n :: Int | n >= 0}, {xs :: Listof(Int) | length(xs) <= n}) :: Int:
+  match xs
+  | []: n
+  | cons(y, ys): count_down(n - 1, ys)

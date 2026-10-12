@@ -1,0 +1,14 @@
+#lang shplait/liquid
+
+// A refinement on a value the checker does not model (a list) is
+// allowed when the predicate speaks about it only through a measure.
+// `length` is such a measure, so "non-empty list" is expressible,
+// and the call sites are checked against it.
+
+fun head_or({xs :: Listof(Int) | length(xs) > 0}, d :: Int) :: Int:
+  match xs
+  | cons(h, t): h
+  | []: d
+
+head_or([1, 2, 3], 0)
+head_or(cons(4, []), 0)

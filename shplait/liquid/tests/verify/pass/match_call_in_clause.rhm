@@ -1,0 +1,18 @@
+#lang shplait/liquid
+
+// A call inside a `match` clause is checked in the clause's own
+// scope, so a pattern variable may be passed to a refined parameter
+// -- and the field refinement it carries is what discharges the
+// obligation.
+
+type Box2
+| wrap(v :: { x :: Int | x > 0 })
+
+fun halve({n :: Int | n > 0}) :: { y :: Int | y >= 0 }:
+  n / 2
+
+fun use(b :: Box2) :: { y :: Int | y >= 0 }:
+  match b
+  | wrap(v): halve(v)
+
+use(wrap(9))

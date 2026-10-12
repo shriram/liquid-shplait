@@ -1,0 +1,19 @@
+#lang shplait/liquid
+
+// Insertion into a sorted list, with a non-negativity refinement on
+// the inserted element.  The recursive call's argument obligation
+// (x >= 0 entails x >= 0) and the three top-level calls are
+// discharged.  Sortedness itself needs element refinements /
+// measures (feature ladder).
+
+fun insert_sorted({x :: Int | x >= 0}, xs :: Listof(Int)) :: Listof(Int):
+  match xs
+  | []: [x]
+  | cons(h, t):
+      cond
+      | x <= h: cons(x, xs)
+      | ~else: cons(h, insert_sorted(x, t))
+
+insert_sorted(3, [1, 2, 5, 8])
+insert_sorted(0, [])
+insert_sorted(10, [1, 2, 5, 8])

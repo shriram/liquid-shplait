@@ -1,0 +1,12 @@
+#lang shplait/liquid
+
+// Liquid-rhombus imported but no refinements used in the program.
+// Should behave identically to vanilla shplait.
+
+fun gcd(a :: Int, b :: Int) :: Int:
+  cond
+  | b == 0: a
+  | ~else: gcd(b, a - (a / b) * b)
+
+gcd(48, 18)
+gcd(100, 75)

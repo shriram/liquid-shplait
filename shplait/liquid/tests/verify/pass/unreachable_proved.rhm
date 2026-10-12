@@ -1,0 +1,33 @@
+#lang shplait/liquid
+
+// `unreachable()` is a proof obligation: the assumptions where it is
+// called must be contradictory.  Here the preconditions and the path
+// conditions of `cond` and `match` rule each call out.
+
+fun sign({n :: Int | n != 0}) :: {s :: Int | s == 1 || s == -1}:
+  cond
+  | n > 0: 1
+  | n < 0: -1
+  | ~else: unreachable()
+
+fun head_or_never({xs :: Listof(Int) | length(xs) > 0}) :: Int:
+  match xs
+  | cons(h, t): h
+  | []: unreachable()
+
+type Light
+| red()
+| green()
+
+measure fun is_red(l :: Light) :: Boolean:
+  match l
+  | red(): #true
+  | green(): #false
+
+fun stop_value({l :: Light | is_red(l)}) :: Int:
+  match l
+  | red(): 0
+  | green(): unreachable()
+
+// a dead branch at the top level
+if 1 > 2 | unreachable() | sign(5)

@@ -1,0 +1,47 @@
+#lang shplait/liquid
+
+// Indexing into a concatenation. The checker does not model
+// string_append, so we work on lists of characters, with our own
+// append whose claim says how long its result is.
+
+fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+  string_get(s, i)
+
+// The characters of s from position i on.
+fun chars(s :: String, {i :: Int | i >= 0 && i <= string_length(s)})
+    :: {r :: Listof(Char) | length(r) == string_length(s) - i}:
+  if i == string_length(s)
+  | []
+  | cons(safe_get(s, i), chars(s, i + 1))
+
+fun nth(l :: Listof(Char), {i :: Int | i >= 0 && i < length(l)}) :: Char:
+  match l
+  | []: unreachable()
+  | cons(h, t):
+      if i == 0
+      | h
+      | nth(t, i - 1)
+
+fun app(a :: Listof(Char), b :: Listof(Char))
+    :: {r :: Listof(Char) | length(r) == length(a) + length(b)}:
+  match a
+  | []: b
+  | cons(h, t): cons(h, app(t, b))
+
+// An index into a is also an index into app(a, b); app's claim is
+// what lets the checker see that, with no proof from us.
+fun get_cat(a :: Listof(Char), b :: Listof(Char), {i :: Int | i >= 0 && i < length(a)}) :: Char:
+  nth(app(a, b), i)
+// error: violated when i = 0, length(a) = 0, length(b) = 0
+/*
+fun get_cat2(a :: Listof(Char), b :: Listof(Char),
+             {i :: Int | i >= 0 && i <= length(a)}) :: Char:
+  nth(app(a, b), i)
+*/
+
+check:
+  get_cat(chars("hello", 0), chars("world", 0), 1)
+  ~is Char"e"
+
+// error: violated when length(chars(...)) = 5
+// nth(chars("hello", 0), 5)

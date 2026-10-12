@@ -1,0 +1,43 @@
+#lang shplait/liquid
+
+// A call to a polymorphic function is instantiated at the types of its
+// arguments: `id(f)` is a `File`, `id(n)` an `Int`.  With a claim
+// relating the result to the argument, the claims about it go through.
+// Inside `id` the type variable is an uninterpreted type, on which only
+// equality means anything.
+
+type File
+| file(fd :: Int, open :: Boolean)
+
+measure fun is_open(f :: File) :: Boolean:
+  match f
+  | file(d, o): o
+
+fun id(x :: ?a) :: {r :: ?a | r == x}:
+  x
+
+fun keep({f :: File | is_open(f)}) :: {r :: File | is_open(r)}:
+  id(f)
+
+fun pos_int({n :: Int | n > 0}) :: {r :: Int | r > 0}:
+  id(n)
+
+fun pick(x :: ?a, y :: ?a, b :: Boolean) :: {r :: ?a | r == x || r == y}:
+  if b | x | y
+
+fun pick_pos({m :: Int | m > 0}, {n :: Int | n > 0}, b :: Boolean) :: {r :: Int | r > 0}:
+  pick(m, n, b)
+
+// A result whose type variable no argument determines (the elements of
+// a list are not modelled) is a value of whatever type its use needs;
+// bound to a name it is one value.
+fun any_of(xs :: Listof(?a)) :: ?a:
+  match xs
+  | cons(h, t): h
+  | []: error(#'any_of, "empty")
+
+fun zero(xs :: Listof(Int)) :: {r :: Int | r == 0}:
+  def v = any_of(xs)
+  v - v
+
+pos_int(id(3))

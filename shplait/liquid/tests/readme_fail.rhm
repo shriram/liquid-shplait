@@ -1,0 +1,41 @@
+#lang shplait
+import:
+  open: "eval.rhm"
+
+// The rejected examples from the README, so that a documented rejection
+// cannot change unnoticed.
+
+// 01_rejected
+//
+// README: what a rejection looks like.
+check_rejects:
+  fun discount({price :: Int | price > 0}) :: {out :: Int | out < price}:
+    price - price / 100
+  ~throws "is violated when"
+
+// 02_datatype_field
+//
+// README: the same constructor with a radius the refinement rules out.
+check_rejects:
+  type Shape
+  | circle(radius :: { r :: Int | r > 0 })
+  | square(side :: { s :: Int | s > 0 })
+
+  fun area(sh :: Shape) :: { a :: Int | a > 0 }:
+    match sh
+    | circle(r): 3 * r * r
+    | square(s): s * s
+
+  area(circle(0))
+  ~throws "is violated"
+
+// 03_unreachable_reached
+//
+// README: without `n != 0`, `sign` is rejected.
+check_rejects:
+  fun sign(n :: Int) :: {s :: Int | s == 1 || s == -1}:
+    cond
+    | n > 0: 1
+    | n < 0: -1
+    | ~else: unreachable()
+  ~throws "call to `unreachable()`: it is reached when n = 0"

@@ -1,0 +1,15 @@
+#lang shplait/liquid
+
+// A user-written `unreachable`: a polymorphic function whose
+// precondition cannot be met.  Each call is an obligation that its
+// path is impossible, and its result has whatever type the context
+// needs.
+
+fun impossible({u :: Int | false}) :: ?a:
+  error(#'impossible, "reached")
+
+fun sign({n :: Int | n != 0}) :: {s :: Int | s == 1 || s == -1}:
+  cond
+  | n > 0: 1
+  | n < 0: -1
+  | ~else: impossible(0)

@@ -1,0 +1,58 @@
+#lang shplait/liquid
+
+// Int0 whose nz field must be non-zero: the field's refinement is
+// proved wherever nz is applied. div still takes any Int0, so it
+// still checks for z when it runs.
+
+type Int0
+| nz(n :: {v :: Int | v != 0})
+| z()
+
+fun i(n :: Int) :: Int0:
+  if (n == 0):
+  | z()
+  | nz(n)
+
+fun add(n1 :: Int0, n2 :: Int0) :: Int0:
+  match n1
+  | z():
+      match n2
+      | z(): z()
+      | nz(nb): nz(nb)
+  | nz(na):
+      match n2
+      | z(): nz(na)
+      | nz(nb): i(na + nb)
+// error: v != 0 is violated when na = 1, nb = -1
+//      | nz(nb): nz(na + nb)
+
+check:
+  add(nz(5), nz(3))
+  ~is nz(8)
+check:
+  add(nz(5), nz(-5))
+  ~is z()
+
+// error: v != 0 is violated
+// nz(0)
+
+fun div(n1 :: Int0, n2 :: Int0) :: Int0:
+  match n1
+  | z():
+      match n2
+      | z(): error(#'div, "undefined")
+      | nz(nb): z()
+  | nz(na):
+      match n2
+      | z(): error(#'div, "divide by zero")
+      | nz(nb): i(na / nb)
+
+check:
+  div(nz(10), nz(2))
+  ~is nz(5)
+check:
+  div(nz(1), nz(2))
+  ~is z()
+check:
+  div(nz(10), z())
+  ~raises "divide by zero"

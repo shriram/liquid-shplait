@@ -1,0 +1,10 @@
+#lang shplait/liquid
+
+// Caller has y >= 0 only, but the call is `helper(y + 1)` where the
+// callee demands v > 0.  Since y + 1 >= 1 > 0 the call discharges.
+
+fun helper({x :: Int | x > 0}) :: Int:
+  x
+
+fun caller({y :: Int | y >= 0}) :: Int:
+  helper(y + 1)

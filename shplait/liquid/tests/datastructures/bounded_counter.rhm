@@ -1,0 +1,18 @@
+#lang shplait/liquid
+
+// Mutable counter whose value is supposed to stay non-negative.
+// Boxof carries a refined Int.  The refinement is not enforced yet;
+// this exercise confirms refinements survive through Boxof + mutation.
+
+def counter = box(0)  // element refinement lives on the fun parameters
+
+fun increment(b :: Boxof({ n :: Int | n >= 0 })) :: Void:
+  set_box(b, unbox(b) + 1)
+
+fun read(b :: Boxof({ n :: Int | n >= 0 })) :: Int:
+  unbox(b)
+
+increment(counter)
+increment(counter)
+increment(counter)
+read(counter)

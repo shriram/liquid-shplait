@@ -1,0 +1,29 @@
+#lang shplait/liquid
+// A measure with an extra (non-datatype) parameter, and a measure
+// that returns a datatype.
+
+type Names
+| no_names()
+| a_name(x :: Symbol, more :: Names)
+
+type Env
+| mt()
+| bind(x :: Symbol, v :: Int, more :: Env)
+
+measure fun names(e :: Env) :: Names:
+  match e
+  | mt(): no_names()
+  | bind(x, v, more): a_name(x, names(more))
+
+measure fun has(ns :: Names, y :: Symbol) :: Boolean:
+  match ns
+  | no_names(): #false
+  | a_name(x, more): x == y || has(more, y)
+
+fun lookup(y :: Symbol, {e :: Env | has(names(e), y)}) :: Int:
+  match e
+  | mt(): 0
+  | bind(x, v, more):
+      if x == y
+      | v
+      | lookup(y, more)

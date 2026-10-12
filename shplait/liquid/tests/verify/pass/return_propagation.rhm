@@ -1,0 +1,15 @@
+#lang shplait/liquid
+
+// Return-refinement propagation: caller's body is a call.  Verifier
+// must replace the call with a fresh constant constrained by the
+// callee's return refinement, then prove the caller's return refinement
+// holds for that constant.
+//
+// Here `square_pos` ensures result >= 1 (from v >= 1, v * v >= 1).
+// `caller` claims its result is positive; that follows from r >= 1.
+
+fun square_pos({v :: Int | v >= 1}) :: { r :: Int | r >= 1 }:
+  v * v
+
+fun caller({n :: Int | n >= 1}) :: { r :: Int | r > 0 }:
+  square_pos(n)

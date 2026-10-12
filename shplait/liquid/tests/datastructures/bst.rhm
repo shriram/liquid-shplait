@@ -1,0 +1,37 @@
+#lang shplait/liquid
+
+// Binary search tree with a positivity refinement on inserted keys.
+// The recursive calls' argument obligations (v > 0 entails v > 0)
+// and the top-level insert calls (3, 7, 5 against v > 0) are
+// discharged by z3.  Field refinements on the datatype itself are
+// not yet supported (feature ladder); the guards on pattern
+// variables contribute no path condition, which only makes the
+// checked obligations stronger.
+
+type BST
+| empty()
+| node(value :: Int, left :: BST, right :: BST)
+
+fun insert({v :: Int | v > 0}, t :: BST) :: BST:
+  match t
+  | empty(): node(v, empty(), empty())
+  | node(x, l, r):
+      cond
+      | v < x: node(x, insert(v, l), r)
+      | v > x: node(x, l, insert(v, r))
+      | ~else: t
+
+fun member(v :: Int, t :: BST) :: Boolean:
+  match t
+  | empty(): #false
+  | node(x, l, r):
+      cond
+      | v == x: #true
+      | v < x: member(v, l)
+      | ~else: member(v, r)
+
+def t = insert(3, insert(7, insert(5, empty())))
+
+member(7, t)
+member(4, t)
+member(3, t)

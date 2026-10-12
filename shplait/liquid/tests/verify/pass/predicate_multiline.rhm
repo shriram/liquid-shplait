@@ -1,0 +1,10 @@
+#lang shplait/liquid
+
+// A predicate may be written across lines inside its braces.
+
+fun clamp(lo :: Int, {hi :: Int | hi >= lo}, x :: Int)
+    :: {y :: Int | y >= lo &&
+                   y <= hi}:
+  max(lo, min(hi, x))
+
+clamp(0, 10, 5)

@@ -1,0 +1,10 @@
+#lang shplait/liquid
+
+// README: mutable state.
+
+fun bump(b :: Boxof({v :: Int | v >= 0})) :: Void:
+  set_box(b, unbox(b) + 1)
+
+def counter = box(0)
+
+bump(counter)

@@ -1,0 +1,13 @@
+#lang shplait/liquid
+
+// `max` and `min` have exact encodings, so ordinary clamping code is
+// checkable without restating the arithmetic in the refinement.
+
+fun clamp(n :: Int) :: { y :: Int | 0 <= y && y <= 100 }:
+  max(0, min(n, 100))
+
+fun at_least_one(n :: Int) :: { y :: Int | y > 0 }:
+  max(n, 1)
+
+clamp(500)
+at_least_one(-3)

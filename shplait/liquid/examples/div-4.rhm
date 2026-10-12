@@ -1,0 +1,49 @@
+#lang shplait/liquid
+
+// No Int0: a refinement on Int says the divisor isn't zero.
+
+fun safe_div(n1 :: Int, {n2 :: Int | n2 != 0}) :: Int:
+  n1 / n2
+
+check:
+  safe_div(10, 2)
+  ~is 5
+check:
+  safe_div(10, 1 + 1)
+  ~is 5
+
+// error: (1 + -1) != 0 is violated
+// safe_div(10, 1 + -1)
+// error: 0 != 0 is violated
+// safe_div(10, 0)
+
+// The claim can use facts about variables.
+fun f({a :: Int | a > 0}) :: Int:
+  safe_div(10, a + 1)
+fun g({a :: Int | a > -1}) :: Int:
+  safe_div(10, a + 1)
+// error: (a + 1) != 0 is violated when a = -1
+/*
+fun h({a :: Int | a > -2}) :: Int:
+  safe_div(10, a + 1)
+*/
+
+// A test supplies the fact: in the then arm, n2 != 0 is known.
+fun try_div(n1 :: Int, n2 :: Int) :: Optionof(Int):
+  if n2 != 0
+  | some(safe_div(n1, n2))
+  | none()
+// error: n2 != 0 is violated when n2 = 0
+/*
+fun try_div2(n1 :: Int, n2 :: Int) :: Optionof(Int):
+  if n2 == 0
+  | some(safe_div(n1, n2))
+  | none()
+*/
+
+check:
+  try_div(10, 2)
+  ~is some(5)
+check:
+  try_div(10, 0)
+  ~is none()

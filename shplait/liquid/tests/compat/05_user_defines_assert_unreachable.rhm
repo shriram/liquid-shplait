@@ -1,0 +1,17 @@
+#lang shplait/liquid
+
+// A program may define its own `unreachable` and `assert`: they shadow
+// the built-ins (which come from the module language, not from an
+// import), and the checker treats them as ordinary functions.
+
+fun unreachable() :: Int:
+  41
+
+fun assert(b :: Boolean) :: Int:
+  if b | 1 | 0
+
+fun f(n :: Int) :: {r :: Int | true}:
+  unreachable() + assert(n > 0)
+
+unreachable() + assert(#false)
+f(3)

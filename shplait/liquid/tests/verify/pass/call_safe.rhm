@@ -1,0 +1,12 @@
+#lang shplait/liquid
+
+// Two interacting obligations both discharge:
+//   (1) call-site: caller's y > 10 implies callee's v > 0;
+//   (2) return: caller's return refinement r > 0 follows from helper's
+//       return refinement r > 0 (return-refinement propagation).
+
+fun helper({x :: Int | x > 0}) :: { r :: Int | r > 0 }:
+  x * 2
+
+fun caller({y :: Int | y > 10}) :: { r :: Int | r > 0 }:
+  helper(y)

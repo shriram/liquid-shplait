@@ -1,0 +1,13 @@
+#lang shplait/liquid
+
+// A percent discount keeps the resulting price in
+// the closed interval [0, original_price].  Z3 must reason about
+// integer division and the relationship between c, pct, and the result.
+//
+// VC: (c >= 0) ∧ (0 < pct ∧ pct <= 100)
+//     ⊨ 0 <= c - (c * pct) / 100 <= c
+
+fun discount_by_pct({c :: Int | c >= 0},
+                    {pct :: Int | 0 < pct && pct <= 100})
+    :: { r :: Int | 0 <= r && r <= c }:
+  c - (c * pct) / 100

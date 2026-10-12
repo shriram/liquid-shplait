@@ -1,0 +1,18 @@
+#lang shplait/liquid
+
+// Mixed: a vanilla shplait function and a refinement-typed function
+// in the same module.  The top-level call chain is checked: because
+// `vanilla` declares a refined return, the checker can prove
+// `vanilla(0) > 0` and accept `refined(vanilla(0))`.  (With a plain
+// `:: Int` return on `vanilla`, that call would be rejected as
+// unprovable — the checker trusts declarations, not bodies.)
+
+fun vanilla(n :: Int) :: { v :: Int | v > 0 }:
+  n * n + 1
+
+fun refined({n :: Int | n > 0}) :: { y :: Int | y > 0 }:
+  n + 1
+
+vanilla(5)
+refined(5)
+refined(vanilla(0))

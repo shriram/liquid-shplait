@@ -1,0 +1,63 @@
+#lang shplait/liquid
+
+// A `let` binding carries into its body what is known about it, and a
+// fact established in an inner scope stays in that scope.
+
+fun pos({k :: Int | k > 0}) :: Int:
+  k
+
+// the inner binding's claim depends on what is known of the outer one
+fun stacked(n :: Int) :: {r :: Int | r > 0}:
+  let x = n * n:              // x >= 0
+    let y = x + 1:            // so y > 0
+      y
+
+// a guard refines, inside one arm, what is known of an outer binding
+fun guarded(n :: Int) :: Int:
+  let x = n - 10:
+    if x > 0
+    | let y = x * 3:
+        pos(y)                // y = 3x, and x > 0 in this arm
+    | 0
+
+// shadowing: the inner, positive `x` is the one the inner body sees
+fun inner_wins(n :: Int) :: Int:
+  let x = n:                          // any integer
+    let x = max(x, 0 - x) + 1:        // positive
+      pos(x)
+
+// a value computed in an inner scope keeps, outside it, what was known
+// there: `y` is twice the inner, positive `x`
+fun escapes(n :: Int) :: {r :: Int | r > 0}:
+  let y = (let x = max(n, 0 - n) + 1: x * 2):
+    y
+
+// measures flow through `let`: `l` is one longer than `xs`
+fun head({xs :: Listof(Int) | length(xs) > 0}) :: Int:
+  match xs
+  | cons(h, t): h
+  | []: unreachable()
+
+fun via_let(x :: Int, xs :: Listof(Int)) :: Int:
+  let l = cons(x, xs):
+    head(l)
+
+// a datatype invariant and a measure through `let`
+type Account
+| account(owner :: Int, balance :: {b :: Int | b >= 0})
+
+measure fun balance_of(a :: Account) :: Int:
+  match a
+  | account(o, b): b
+
+fun withdraw(a :: Account, {amt :: Int | amt >= 0 && amt <= balance_of(a)}) :: Account:
+  match a
+  | account(o, b): account(o, b - amt)
+
+fun withdraw_half(a :: Account) :: Account:
+  let half = balance_of(a) / 2:
+    withdraw(a, half)
+
+inner_wins(-5)
+escapes(-3)
+via_let(1, [])

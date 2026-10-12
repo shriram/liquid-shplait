@@ -1,0 +1,15 @@
+#lang shplait/liquid
+
+// README: refined datatype fields.
+
+type Shape
+| circle(radius :: { r :: Int | r > 0 })
+| square(side :: { s :: Int | s > 0 })
+
+fun area(sh :: Shape) :: { a :: Int | a > 0 }:
+  match sh
+  | circle(r): 3 * r * r
+  | square(s): s * s
+
+area(circle(2))
+area(square(5))

@@ -1,0 +1,39 @@
+#lang shplait/liquid
+
+// A top-level `def` may be used in any function's refinements and
+// checked body, and in datatype field refinements: top-level defs
+// are immutable, so a function may assume what the def says.  A plain
+// def contributes its value (here also in terms of an earlier def), a
+// refined one only its refinement.
+
+// Used before it is defined: the order of definitions does not matter.
+fun at_least_cost({n :: Int | n >= COST}) :: {r :: Int | r >= 0}:
+  n - COST
+
+def COST = 2
+def DOUBLE_COST = COST * 2
+def LIMIT :: {k :: Int | k > 10} = 12
+
+type Ticket
+| ticket(price :: {p :: Int | p >= COST && p <= LIMIT})
+
+fun cheapest() :: {t :: Ticket | true}:
+  ticket(COST)
+
+fun two_rides({n :: Int | n >= DOUBLE_COST}) :: {r :: Int | r >= COST}:
+  at_least_cost(n - COST) + COST
+
+fun capped(n :: Int) :: {r :: Int | r <= LIMIT}:
+  if n <= 10
+  | n
+  | 10
+
+check:
+  at_least_cost(COST)
+  ~is 0
+check:
+  two_rides(4)
+  ~is 2
+check:
+  capped(50)
+  ~is 10

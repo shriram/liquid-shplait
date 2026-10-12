@@ -1,0 +1,17 @@
+#lang shplait/liquid
+
+// No refinements: any Int is accepted as an index, and a bad one is
+// caught only when the program runs.
+
+fun get(s :: String, i :: Int) :: Char:
+  string_get(s, i)
+
+check:
+  get("hello", 1)
+  ~is Char"e"
+check:
+  get("hello", 5)
+  ~raises "index is out of range"
+check:
+  get("hello", -1)
+  ~raises "value does not satisfy annotation"

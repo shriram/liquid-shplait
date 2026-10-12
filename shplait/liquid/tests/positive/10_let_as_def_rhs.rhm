@@ -1,0 +1,17 @@
+#lang shplait/liquid
+
+// A `def` or `let` whose right-hand side is exactly a parenthesized
+// `let`.  shplait's `def` asks whether a right-hand side is a value
+// (for polymorphism) by parsing it in its value space; liquid-shplait's
+// `let` once had no binding there, and these failed with "match:
+// unexpected term".
+
+def a = (let y = 1: y * 2)
+
+fun f(n :: Int) :: Int:
+  def b = (let y = n: y + 1)
+  let c = (let y = b: y * 2):
+    c
+
+let d = (let y = 3: y):
+  d + a + f(1)

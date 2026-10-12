@@ -1,0 +1,378 @@
+#lang shplait
+import:
+  open: "eval.rhm"
+
+// Programs outside the subset the refinement checker supports: each must be
+// rejected with a message saying so, not accepted unchecked.
+
+// anonymous_fun
+//
+// Refinements on anonymous-function parameters are not supported:
+// there is no definition name to report obligations against.
+check_rejects:
+  def doubler = (fun (x :: { n :: Int | n > 0 }) :: Int: x * 2)
+
+  doubler(4)
+  ~throws "refinement braces are only checked"
+
+// anonymous_fun_refined_param
+//
+// The checker identifies a function's calls by its name, so a refined
+// parameter on an anonymous function is rejected with this message.
+check_rejects:
+  fun f(n :: Int) :: Int:
+    let x = n * n + 1:
+      let g = (fun ({y :: Int | y > x}): y - x):
+        g(x + 1)
+  ~throws "refinements on an anonymous `fun` are not checked"
+
+// anonymous_fun_refined_return
+//
+// A refined return type on an anonymous function.
+check_rejects:
+  def g = fun (y :: Int) :: {r :: Int | r > 0}: y * y + 1
+  ~throws "refinements on an anonymous `fun` are not checked"
+
+// call_through_local_function
+//
+// A claim that depends on the result of a function defined inside
+// the function: the checker does not follow calls to it.
+check_rejects:
+  fun f(n :: Int) :: {r :: Int | r > 0}:
+    fun g(y :: Int) :: Int:
+      y * y + 1
+    g(n)
+  ~throws "`g` is a function defined inside another definition"
+
+// constructor_as_value
+//
+// A constructor with a refined field must be applied directly.
+// Handing it to `map` would build values whose field refinement
+// nothing proved, and the assumption made when a `match` pattern
+// binds that field would then be unsound.
+check_rejects:
+  type Pos
+  | pos(v :: { p :: Int | p > 0 })
+
+  fun build(xs :: Listof(Int)) :: Listof(Pos):
+    map(pos, xs)
+  ~throws "may be used only as a direct call"
+
+// dependent_arg_failed_local
+//
+// As dependent_arg_unmodelled below, with the unmodelled
+// call behind a local `def`.
+check_rejects:
+  fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+    string_get(s, i)
+
+  fun g2(a :: String, b :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
+    def u = string_append(a, b)
+    safe_get(u, i)
+  ~throws "this refinement depends on argument 1 (`u`), which the checker cannot analyze: local definition `u` cannot be checked: call to `string_append`"
+
+// dependent_arg_unmodelled
+//
+// `safe_get`'s refinement on `i` mentions `s`, whose actual here is a
+// call the checker does not model.  This fails closed, with a message
+// naming the argument and the reason.
+check_rejects:
+  fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+    string_get(s, i)
+
+  fun g2(a :: String, b :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
+    safe_get(string_append(a, b), i)
+  ~throws "this refinement depends on argument 1 (`string_append(a, b)`), which the checker cannot analyze: call to `string_append`"
+
+// error_in_predicate
+//
+// `error` is allowed in a body (where it never returns), not in a
+// predicate, which must be a formula.
+check_rejects:
+  fun f({n :: Int | n > 0 || error(#'f, "no")}) :: Int:
+    n
+  ~throws "a refinement predicate may not call `error`"
+
+// internal_fun_refined
+//
+// Refinements are checked only on top-level definitions; a function
+// defined inside another may not carry one.
+check_rejects:
+  fun outer(n :: Int) :: Int:
+    def x = n * n + 1
+    fun g({y :: Int | y > x}) :: {r :: Int | r > 0}:
+      y - x
+    g(x + 1)
+  ~throws "function `g` is defined inside another definition"
+
+// internal_fun_returned_refined
+//
+// The closure version: a refined function defined inside another and
+// returned from it.  Rejected for the same reason.
+check_rejects:
+  fun make_adder({n :: Int | n > 0}) :: Int -> Int:
+    fun add({y :: Int | y > 0}) :: {r :: Int | r > n}:
+      y + n
+    add
+  ~throws "function `add` is defined inside another definition"
+
+// internal_fun_uses_box
+//
+// A function defined inside another may not use the enclosing
+// function's box: it may run after the box has changed, and the
+// checker tracks a box only in the function that receives it.
+check_rejects:
+  fun f(b :: Boxof({v :: Int | v >= 0})) :: Int:
+    fun reset() :: Void:
+      set_box(b, 0)
+    reset()
+    unbox(b)
+  ~throws "may not use that function's `Boxof` parameter `b`"
+
+// internal_measure
+//
+// A measure defined inside a function (it was silently accepted).
+check_rejects:
+  type T
+  | t(v :: Int)
+
+  fun f(x :: T) :: Int:
+    measure fun val(a :: T) :: Int:
+      match a
+      | t(v): v
+    val(x)
+  ~throws "a `measure fun` must be defined at the top level of the module"
+
+// let_annotated
+//
+// A type annotation, refined or not, on a `let` binding.
+check_rejects:
+  fun f(n :: Int) :: Int:
+    let m :: {k :: Int | k > 0} = n * n + 1:
+      m
+  ~throws "a `let` binding cannot carry a type or a refinement"
+
+// let_refined
+//
+// Refinement braces on a `let` binding.
+check_rejects:
+  fun f(n :: Int) :: Int:
+    let {m :: Int | m > 0} = n * n + 1:
+      m
+  ~throws "a `let` binding cannot carry a refinement"
+
+// let_shadows
+//
+// A `let` may shadow any other binding (see verify/pass/let_refinement.rhm),
+// but not a `Boxof` parameter, whose uses the checker polices by name.
+check_rejects:
+  fun f(b :: Boxof({v :: Int | v >= 0})) :: {r :: Int | r > 0}:
+    let b = 5:
+      b
+  ~throws "`let b` shadows a `Boxof` parameter; rename it"
+
+// let_unmodelled_used
+//
+// A `let` whose right-hand side the checker cannot model is fine
+// until a claim needs its variable; then the message says why.
+check_rejects:
+  fun pos({k :: Int | k > 0}) :: Int:
+    k
+
+  fun f(n :: Int) :: Int:
+    let s = to_string(n):
+      pos(string_length(s))
+  ~throws "`let`-bound `s` cannot be checked: call to `to_string`"
+
+// listof_element
+//
+// Element refinements inside Listof are not yet supported; the
+// checker rejects the position outright rather than silently
+// ignoring the claim.
+check_rejects:
+  fun length_pos(lst :: Listof({n :: Int | n > 0})) :: Int:
+    match lst:
+    | []: 0
+    | cons(hd, tl): 1 + length_pos(tl)
+  ~throws "refinement braces are only checked"
+
+// local_def_refined
+//
+// A `def` inside a function may not carry a refinement (the checker
+// still knows `m` equals its right-hand side without one).
+check_rejects:
+  fun f(n :: Int) :: Int:
+    def m :: {k :: Int | k > 0} = n * n + 1
+    m
+  ~throws "`def m` is defined inside another definition"
+
+// local_shadowing
+//
+// Identifiers are matched by name, so a local definition that
+// shadows a parameter is refused rather than silently rebinding it.
+check_rejects:
+  fun f({n :: Int | n > 0}) :: { y :: Int | y > 0 }:
+    def n = 0 - 1
+    n
+  ~throws "shadows a parameter"
+
+// mapof_element
+//
+// Element refinements inside Mapof are not supported.
+check_rejects:
+  def prices :: Mapof(String, { n :: Int | n > 0 }) = {"latte": 5, "muffin": 3}
+  ~throws "refinement braces are only checked"
+
+// measure_else_clause
+check_rejects:
+  type Env
+  | empty()
+  | bind(v :: Int, more :: Env)
+
+  measure fun size(g :: Env) :: Int:
+    match g
+    | empty(): 0
+    | ~else: 1
+  ~throws "each clause of a measure must be a constructor pattern"
+
+// measure_not_a_match
+check_rejects:
+  type Env
+  | empty()
+  | bind(v :: Int, more :: Env)
+
+  measure fun size(g :: Env) :: Int:
+    0
+  ~throws "a measure's body must be a single `match` on a datatype parameter"
+
+// measure_uses_length
+check_rejects:
+  type Bag
+  | bag(items :: Listof(Int))
+
+  measure fun count(b :: Bag) :: Int:
+    match b
+    | bag(items): length(items)
+  ~throws "`length` cannot be used inside a measure"
+
+// needs_induction_times_out
+//
+// True, but needs induction (a positive list has a non-negative total),
+// which the checker cannot do; the manual's "When the solver gives up".
+check_rejects:
+  type IntList
+  | inil()
+  | icons(hd :: Int, tl :: IntList)
+
+  measure fun total(l :: IntList) :: Int:
+    match l
+    | inil(): 0
+    | icons(h, t): h + total(t)
+
+  measure fun all_positive(l :: IntList) :: Boolean:
+    match l
+    | inil(): #true
+    | icons(h, t): h > 0 && all_positive(t)
+
+  fun average({l :: IntList | total(l) >= 0}, {n :: Int | n > 0}) :: {a :: Int | a >= 0}:
+    total(l) / n
+
+  fun average_positive({l :: IntList | all_positive(l)}, {n :: Int | n > 0}) :: Int:
+    average(l, n)
+  ~throws "gave up on obligation `call to `average`, argument 1`"
+
+// nested_listof_element
+//
+// A refinement over a container whose element type also carries a
+// refinement.  Neither position is supported; the inner one is
+// reported.
+check_rejects:
+  fun first_or({lst :: Listof({n :: Int | n > 0}) | true}, d :: Int) :: Int:
+    match lst:
+    | []: d
+    | cons(hd, tl): hd
+  ~throws "refinement braces are only checked"
+
+// no_spurious_return_violation
+//
+// When a parameter predicate cannot be read, only that is reported: the
+// return obligation is not attempted without its precondition, so this
+// file produces exactly one message (a return violation would be a
+// second line, and would be a red herring).
+check_rejects:
+  fun days_in_month({m :: Int | m >= 1 && m <= 12}) :: {y :: Int | y >= 28 && y <= 31}:
+    if m == 2 | 28 | 31
+
+  fun day_of_year({m :: Int | m >= 1 && m <= 12}, {d :: Int | d >= 1 && d <= days_in_month(m)})
+      :: {y :: Int | y >= 1 && y <= 366}:
+    (m - 1) * 31 + d
+  ~throws "a refinement predicate may not call `days_in_month`"
+
+// predicate_calls_function
+//
+// A refinement predicate that calls a module function.  Modeling the
+// call soundly needs measure support (on the feature ladder), so the
+// checker rejects the predicate rather than assuming anything.
+check_rejects:
+  fun is_even(n :: Int) :: Boolean:
+    n == (n / 2) * 2
+
+  fun half({m :: Int | is_even(m)}) :: Int:
+    m / 2
+  ~throws "a refinement predicate may not call `is_even`"
+
+// predicate_calls_shadowed_builtin
+//
+// A module function that shadows a builtin's name is still a module
+// function: the predicate is refused rather than read as the builtin.
+check_rejects:
+  fun max(a :: Int, b :: Int) :: Int:
+    if a > b | a | b
+
+  fun top(a :: Int, b :: Int) :: {y :: Int | y == max(a, b)}:
+    if a > b | a | b
+  ~throws "a refinement predicate may not call `max`"
+
+// string_measure_only
+//
+// A String is not modelled, so it can be spoken about only through
+// `string_length`.  Comparing two strings in a refinement is an
+// error, not a silently-accepted claim.
+check_rejects:
+  fun greet({s :: String | s == "hi"}) :: String:
+    s
+  ~throws "is not checked on this type"
+
+// string_refinement
+//
+// String-typed refinements parse, but the checker's logic covers
+// integers only, so the declared predicate is an error — an
+// unexpressible claim must not be silently accepted.
+check_rejects:
+  fun greet({s :: String | s != ""}) :: String:
+    s
+  ~throws "cannot check"
+
+// top_def_call
+//
+// A top-level def whose right-hand side calls a function is not
+// modelled, so a refinement that mentions it fails closed.
+check_rejects:
+  fun double(n :: Int) :: {r :: Int | r == 2 * n}:
+    2 * n
+
+  def COST = double(1)
+
+  fun at_least_cost({n :: Int | n >= COST}) :: Int:
+    n - COST
+  ~throws "top-level `COST` cannot be checked: its right-hand side calls `double`"
+
+// unknown_callee
+//
+// A call the checker has no specification for, in a position that
+// carries a claim, is an error naming the callee.  Nothing about
+// `list_get` is assumed.
+check_rejects:
+  fun pick({xs :: Listof(Int) | true}) :: { y :: Int | y > 0 }:
+    list_get(xs, 0)
+  ~throws "neither a function defined in this module nor one of the builtins"

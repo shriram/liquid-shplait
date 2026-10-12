@@ -1,0 +1,14 @@
+#lang shplait/liquid
+
+// The caller's spec alone (y :: Int, any value) does NOT imply the
+// callee's precondition (v > 0).  The call is safe only because it's
+// guarded by `if y > 0`.  The verifier should pick up the path
+// condition and discharge the obligation.
+
+fun helper({x :: Int | x > 0}) :: Int:
+  x * 2
+
+fun caller(y :: Int) :: Int:
+  if y > 0
+  | helper(y)
+  | 0

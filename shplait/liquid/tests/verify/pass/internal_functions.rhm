@@ -1,0 +1,34 @@
+#lang shplait/liquid
+
+// A function defined inside another carries no refinements, but the
+// calls in its body are checked in the enclosing scope: its own
+// parameters are arbitrary, and what it uses from the enclosing
+// function keeps what is known about it.
+
+fun pos({k :: Int | k > 0}) :: Int:
+  k
+
+// `x` is known positive where `g` is defined, and stays so
+fun with_internal(n :: Int) :: Int:
+  def x = n * n + 1
+  fun g(y :: Int) :: Int:
+    pos(x) + y
+  g(1)
+
+// the same for an anonymous function passed along
+fun mapped(n :: Int, xs :: Listof(Int)) :: Listof(Int):
+  let x = max(n, 0 - n) + 1:
+    map(fun (y): pos(x) * y, xs)
+
+// What does work for an internal function that needs a refinement:
+// define it at the top level and pass it what it would capture.
+fun lifted({x :: Int | x > 0}, {y :: Int | y > x}) :: {r :: Int | r > 0}:
+  y - x
+
+fun uses_lifted(n :: Int) :: {r :: Int | r > 0}:
+  def x = n * n + 1
+  lifted(x, x + 1)
+
+with_internal(3)
+mapped(-2, [1, 2])
+uses_lifted(4)

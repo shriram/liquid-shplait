@@ -1,0 +1,54 @@
+#lang shplait/liquid
+
+// As div-2, but i and add now say what number they produce, using a
+// second measure, val. Now the checker can tell 1 + 1 from 1 + -1.
+
+type Int0
+| nz(n :: {v :: Int | v != 0})
+| z()
+
+measure fun is_nz(x :: Int0) :: Boolean:
+  match x
+  | nz(n): #true
+  | z(): #false
+
+measure fun val(x :: Int0) :: Int:
+  match x
+  | nz(n): n
+  | z(): 0
+
+fun i(n :: Int) :: {r :: Int0 | val(r) == n}:
+  if (n == 0):
+  | z()
+  | nz(n)
+
+fun add(n1 :: Int0, n2 :: Int0) :: {r :: Int0 | val(r) == val(n1) + val(n2)}:
+  match n1
+  | z():
+      match n2
+      | z(): z()
+      | nz(nb): nz(nb)
+  | nz(na):
+      match n2
+      | z(): nz(na)
+      | nz(nb): i(na + nb)
+
+fun div(n1 :: Int0, {n2 :: Int0 | is_nz(n2)}) :: Int0:
+  match n1
+  | z(): z()
+  | nz(na):
+      match n2
+      | z(): unreachable()
+      | nz(nb): i(na / nb)
+
+check:
+  div(nz(10), add(nz(1), nz(1)))
+  ~is nz(5)
+check:
+  div(nz(10), i(2))
+  ~is nz(5)
+
+// error: is_nz(add(nz(1), nz(-1))) is violated when add(...) = z()
+// div(nz(10), add(nz(1), nz(-1)))
+// error: is_nz(i(0)) is violated when i(...) = z()
+// div(nz(10), i(0))

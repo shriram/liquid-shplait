@@ -1,0 +1,654 @@
+#lang rhombus/static/and_meta
+
+// Refinement-type extension to shplait — the surface layer.
+//
+// Surface form (binder-brace): a refinement wraps a whole binder,
+//
+//     fun double({n :: Int | n > 0}) :: {y :: Int | y > 0}: n * 2
+//     def limit :: {k :: Int | k > 0} = 5
+//     fun bump(b :: Boxof({v :: Int | v >= 0})) :: Int: ...
+//
+// Design:
+//
+//   * This module OWNS `fun` and `def`: wrapper macros parse each
+//     definition, strip refinement braces so shplait's HM sees only
+//     base types, and stash the full structure (params, predicates,
+//     return, body, def right-hand sides) at compile time.  shplait
+//     is delegated to for everything else, so HM behaves exactly as
+//     in plain shplait.
+//   * When shplait finishes expanding the module (its
+//     `finish_frame_hook`), the stash is handed to the verifier
+//     (verifier.rkt), which builds VCs, runs Z3, and reports every
+//     failed obligation and every construct it could not analyze.
+//     Both are compile-time errors — the checker FAILS CLOSED.
+//   * Refinement braces in a position the checker does not track
+//     (Listof/Mapof elements, function-type positions, anonymous
+//     funs) are a compile-time error naming the restriction, not a
+//     silent no-op.  Datatype fields may carry refinements.
+//
+// The finish-frame hook is registered by CHAINING onto whatever
+// callback is already installed, so this extension composes with
+// other extensions instead of silently replacing their checks.
+//
+// Load-bearing fact: each module compilation gets a fresh phase-1
+// instantiation of this module (verified empirically), so the
+// mutable stashes below are per-compilation state; they are also
+// cleared after each run as a defensive measure.
+
+import:
+  lib("shplait/main.rkt") as sh
+  lib("shplait/private/value.rhm").value
+  lib("shplait/private/value.rhm").value_meta
+  lib("shplait/private/frame.rhm") as fr
+  lib("shplait/private/type_expr.rhm")!define.type_expr
+  meta:
+    lib("shplait/liquid/verifier.rkt") as v
+    lib("shplait/liquid/interaction.rkt") as ia
+    lib("racket/base.rkt") as rkt
+
+export:
+  fun
+  def
+  let
+  measure
+  liquid_module_end
+  // shplait binds `type` in two spaces: a `type_defn` pre-pass that
+  // records the datatype's name and arity (and never looks at the
+  // fields), and a `decl` macro that expands the variants and parses
+  // the field types.  Only the second one has to be ours, so the
+  // pre-pass keeps working untouched.
+  only_space decl:
+    type
+  only_space type_expr:
+    #%braces
+
+meta:
+  // One record per `fun`:
+  //   [name_stx,
+  //    [[param_id, base_ty_stx, refinement_or_false, kind], ...],
+  //    ret_refinement_or_false,
+  //    ret_base_ty_stx,
+  //    body_stx]
+  // where refinement = [bound_id, base_ty_stx, pred_stx] and kind is
+  // #'plain | #'boxof (Boxof element refinement).  The return base
+  // type is stashed separately so the checker knows the SORT of a
+  // call's result even when the return type carries no refinement.
+  def mutable fun_stash :: List = []
+  // One record per refined `def`:
+  //   [name_stx, [bound_id, base_ty_stx, pred_stx], base_ty_stx, rhs_stx]
+  def mutable def_stash :: List = []
+  // One record per datatype constructor:
+  //   [ctor_stx, type_name_stx, [[field_id, base_ty_stx, refinement_or_false], ...]]
+  // A field refinement is ASSUMED where a `match` pattern binds the
+  // field and PROVED where the constructor is applied.  A field's
+  // predicate may mention the fields declared before it.
+  def mutable ctor_stash :: List = []
+  // One record per `measure fun`:
+  //   [name_stx, [[param_id, param_base_ty_stx], ...], ret_base_ty_stx, body_stx]
+  // The body must be a `match` on one datatype parameter with one
+  // clause per constructor; the verifier turns it into a recursive
+  // SMT function that refinement predicates may call.
+  def mutable measure_stash :: List = []
+
+  fun stash_fun(rec):
+    fun_stash := fun_stash ++ [rec]
+  fun stash_def(rec):
+    def_stash := def_stash ++ [rec]
+  fun stash_ctor(rec):
+    ctor_stash := ctor_stash ++ [rec]
+  fun stash_measure(rec):
+    measure_stash := measure_stash ++ [rec]
+
+  // ----------------------------------------------------------------
+  // The module's records, persisted for the interactions window.
+  //
+  // The stashes above exist only while the module is being expanded.
+  // DrRacket's interactions window instantiates the module's
+  // compile-time state afresh, so a `fun` typed there would be checked
+  // against nothing.  `liquid_module_end()`, which the reader places
+  // last in every module, expands to a `meta` registration of every
+  // record, encoded as syntax; that registration is part of the
+  // compiled module and re-runs whenever the compile-time state is
+  // instantiated, which puts the records back.  Definitions typed at
+  // the prompt are appended as they are checked.
+  def mutable module_funs :: List = []
+  def mutable module_defs :: List = []
+  def mutable module_ctors :: List = []
+  def mutable module_measures :: List = []
+
+  // Encoding: a record is a tree of identifiers, groups (types,
+  // predicates, right-hand sides), a body (several groups), symbols,
+  // booleans and lists.  Groups go in brackets, lists in parens, a body
+  // in a block, symbols as strings; identifiers and booleans as they are.
+  fun enc_id(id) :: Syntax: Syntax.make_group([id])
+  fun enc_group(g) :: Syntax:
+    match g
+    | '': Syntax.make_group([Syntax.make([#'brackets])])   // an absent type
+    | ~else: Syntax.make_group([Syntax.make([#'brackets, g])])
+  fun enc_body(b) :: Syntax:
+    let gs:
+      try:
+        (b :~ Syntax).unwrap_sequence()
+        ~catch _: [b]
+    Syntax.make_group([Syntax.make([#'block] ++ gs)])
+  fun enc_bool(b) :: Syntax: Syntax.make_group([b])
+  fun enc_sym(sym) :: Syntax: Syntax.make_group([to_string(sym)])
+  fun enc_list(l :: List) :: Syntax: Syntax.make_group([Syntax.make([#'parens] ++ l)])
+  fun enc_ref(r):
+    if r == #false
+    | enc_bool(#false)
+    | // [bound, pred] on a parameter or field; [bound, base, pred] on
+      // a return type or a def
+      let rl :~ List = r
+      enc_list([enc_id(rl[0])] ++ rl.rest.map(enc_group))
+  fun enc_param(p :~ List):
+    enc_list([enc_id(p[0]), enc_group(p[1]), enc_ref(p[2]), enc_sym(p[3])])
+  fun enc_fun(rec :~ List):
+    let params = enc_list((rec[1] :~ List).map(enc_param))
+    enc_list([enc_id(rec[0]), params, enc_ref(rec[2]), enc_group(rec[3]), enc_body(rec[4])])
+  fun enc_def(rec :~ List):
+    enc_list([enc_id(rec[0]), enc_ref(rec[1]), enc_group(rec[2]), enc_group(rec[3])])
+  fun enc_field(f :~ List):
+    enc_list([enc_id(f[0]), enc_group(f[1]), enc_ref(f[2])])
+  fun enc_ctor(rec :~ List):
+    let fields = enc_list((rec[2] :~ List).map(enc_field))
+    enc_list([enc_id(rec[0]), enc_id(rec[1]), fields])
+  fun enc_mparam(pr :~ List):
+    enc_list([enc_id(pr[0]), enc_group(pr[1])])
+  fun enc_measure(rec :~ List):
+    let params = enc_list((rec[1] :~ List).map(enc_mparam))
+    enc_list([enc_id(rec[0]), params, enc_group(rec[2]), enc_body(rec[3])])
+
+  fun dec_list(g :~ Syntax) :: List:
+    match g
+    | '($x, ...)': [x, ...]
+  fun dec_id(g :~ Syntax) :: Syntax:
+    match g
+    | '$(x :: Identifier)': x
+  fun dec_group(g :~ Syntax) :: Syntax:
+    match g
+    | '[$t ...]': '$t ...'
+  fun dec_body(g :~ Syntax) :: Syntax:
+    let [blk] = g.unwrap_group()
+    let [_, & gs] = (blk :~ Syntax).unwrap()
+    Syntax.make_sequence(gs)
+  fun dec_bool(g :~ Syntax):
+    match g
+    | '#false': #false
+    | '#true': #true
+  fun dec_sym(g :~ Syntax) :: Symbol:
+    match g
+    | '$(str :: String)': Symbol.from_string(str.unwrap())
+  fun dec_ref(g :~ Syntax):
+    match g
+    | '#false': #false
+    | ~else:
+        let [b, & rest] = dec_list(g)
+        [dec_id(b)] ++ rest.map(dec_group)
+  fun dec_param(p :~ Syntax) :: List:
+    let [pid, base, r, kind] = dec_list(p)
+    [dec_id(pid), dec_group(base), dec_ref(r), dec_sym(kind)]
+  fun dec_fun(g :~ Syntax) :: List:
+    let [id, params, ret, ret_base, body] = dec_list(g)
+    [dec_id(id), dec_list(params).map(dec_param), dec_ref(ret), dec_group(ret_base), dec_body(body)]
+  fun dec_def(g :~ Syntax) :: List:
+    let [id, r, base, rhs] = dec_list(g)
+    [dec_id(id), dec_ref(r), dec_group(base), dec_group(rhs)]
+  fun dec_field(f :~ Syntax) :: List:
+    let [fid, base, r] = dec_list(f)
+    [dec_id(fid), dec_group(base), dec_ref(r)]
+  fun dec_ctor(g :~ Syntax) :: List:
+    let [ctor, tname, fields] = dec_list(g)
+    [dec_id(ctor), dec_id(tname), dec_list(fields).map(dec_field)]
+  fun dec_mparam(pr :~ Syntax) :: List:
+    let [pid, base] = dec_list(pr)
+    [dec_id(pid), dec_group(base)]
+  fun dec_measure(g :~ Syntax) :: List:
+    let [id, params, rt, body] = dec_list(g)
+    [dec_id(id), dec_list(params).map(dec_mparam), dec_group(rt), dec_body(body)]
+
+  fun register_module(g :: Syntax):
+    let [funs, defs, ctors, measures] = dec_list(g)
+    module_funs := module_funs ++ dec_list(funs).map(dec_fun)
+    module_defs := module_defs ++ dec_list(defs).map(dec_def)
+    module_ctors := module_ctors ++ dec_list(ctors).map(dec_ctor)
+    module_measures := module_measures ++ dec_list(measures).map(dec_measure)
+
+  // ----------------------------------------------------------------
+  // Parameter shapes.  `cleaned` is what shplait sees.
+  syntax_class RArg:
+    kind ~sequence
+    fields:
+      cleaned
+      binder
+      base
+      bound     // predicate's bound identifier ('' when unrefined)
+      pred      // '' when unrefined
+      kind
+  | '{$(id :: Identifier) :: $t ... | $g; ...}':
+      field cleaned = '$id :: $t ...'
+      field binder = id
+      field base = '$t ...'
+      field bound = id
+      field pred = join_groups([g, ...])
+      field kind = #'plain
+  | '$(id :: Identifier) $(_ && '::') $(bx && 'Boxof')({$(el :: Identifier) :: $t ... | $g; ...})':
+      field cleaned = '$id :: $bx($t ...)'
+      field binder = id
+      field base = '$t ...'
+      field bound = el
+      field pred = join_groups([g, ...])
+      field kind = #'boxof
+  | '$(id :: Identifier) $(_ && '::') $t ...':
+      field cleaned = '$id :: $t ...'
+      field binder = id
+      field base = '$t ...'
+      field bound = ''
+      field pred = ''
+      field kind = #'plain
+  | '$(id :: Identifier)':
+      field cleaned = '$id'
+      field binder = id
+      field base = ''
+      field bound = ''
+      field pred = ''
+      field kind = #'plain
+
+  // Datatype field: `name :: T` or `name :: {v :: T | P}`.  The brace
+  // is an ANNOTATION here (as on `def` and return types), naming the
+  // field's value.
+  syntax_class TField:
+    kind ~sequence
+    fields:
+      cleaned
+      fname
+      base
+      bound
+      pred
+  | '$(id :: Identifier) $(_ && '::') {$(b :: Identifier) :: $t ... | $g; ...}':
+      field cleaned = '$id :: $t ...'
+      field fname = id
+      field base = '$t ...'
+      field bound = b
+      field pred = join_groups([g, ...])
+  | '$(id :: Identifier) $(_ && '::') $t ...':
+      field cleaned = '$id :: $t ...'
+      field fname = id
+      field base = '$t ...'
+      field bound = ''
+      field pred = ''
+
+  fun refinement_of(bound, pred):
+    match pred
+    | '': #false
+    | ~else: [bound, pred]
+
+  // A predicate written across several lines inside the braces reaches
+  // us as several groups (a line break ends a shrubbery group).  Join
+  // them back into the one group the reader meant.
+  fun join_groups(gs :: List) :: Syntax:
+    Syntax.make_group(for List:
+                        each g: gs
+                        each t: (g :~ Syntax).unwrap_group()
+                        t)
+
+  // ----------------------------------------------------------------
+  // The finish-frame callback: hand the stash to the verifier and
+  // report everything it returns as one batched compile error.
+  fun run_checks():
+    // the module body as compiled (not the file on disk), for the
+    // top-level calls and definitions
+    let body = ia.#{take-module-body}()
+    // A module with no definitions is checked too: its top level may
+    // call `unreachable()` or `assert(...)`.
+    when fun_stash.length() > 0 || def_stash.length() > 0 || ctor_stash.length() > 0
+      || measure_stash.length() > 0 || body
+    | let funs = fun_stash
+      let defs = def_stash
+      let ctors = ctor_stash
+      let measures = measure_stash
+      fun_stash := []
+      def_stash := []
+      ctor_stash := []
+      measure_stash := []
+      // problems: PairList of PairList[name_symbol, message_string]
+      let problems :~ PairList = v.verify_module(funs, defs, ctors, measures, body)
+      report(problems, funs, defs, ctors, measures, #false)
+
+  // An interaction: definitions typed at the prompt are checked on
+  // their own, and the calls in the form are checked against the
+  // module's records.
+  fun run_interaction_checks():
+    let form = ia.#{take-interaction-form}()
+    let funs = fun_stash
+    let defs = def_stash
+    let ctors = ctor_stash
+    let measures = measure_stash
+    fun_stash := []
+    def_stash := []
+    ctor_stash := []
+    measure_stash := []
+    let all_funs = module_funs ++ funs
+    let all_defs = module_defs ++ defs
+    let all_ctors = module_ctors ++ ctors
+    let all_measures = module_measures ++ measures
+    module_funs := all_funs
+    module_defs := all_defs
+    module_ctors := all_ctors
+    module_measures := all_measures
+    when form || funs.length() > 0 || defs.length() > 0 || measures.length() > 0
+    | let problems :~ PairList = v.verify_interaction(all_funs, all_defs, all_ctors, all_measures, funs, defs, form)
+      report(problems, all_funs, all_defs, all_ctors, all_measures, form)
+
+  fun report(problems :~ PairList, funs :~ List, defs :~ List, ctors :~ List, measures :~ List,
+             form):
+      when problems.length() > 0
+      | // Anchor a message at the definition it is about; fall back to
+        // the interaction form, or the first definition of any kind in
+        // the module.
+        // (#false only for a module with no definitions, whose problems
+        // are all top-level ones carrying their own anchor)
+        let fallback :~ Syntax:
+          cond
+          | form: form
+          | funs.length() > 0: (funs[0] :~ List)[0]
+          | defs.length() > 0: (defs[0] :~ List)[0]
+          | ctors.length() > 0: (ctors[0] :~ List)[0]
+          | measures.length() > 0: (measures[0] :~ List)[0]
+          | ~else: #false
+        fun anchor_for(name_sym) :~ Syntax:
+          let from_funs:
+            for values(found = #false) (rec :~ List: funs):
+              if !found && Syntax.unwrap(rec[0]) == name_sym
+              | rec[0]
+              | found
+          let from_defs:
+            for values(found = from_funs) (rec :~ List: defs):
+              if !found && Syntax.unwrap(rec[0]) == name_sym
+              | rec[0]
+              | found
+          let from_measures:
+            for values(found = from_defs) (rec :~ List: measures):
+              if !found && Syntax.unwrap(rec[0]) == name_sym
+              | rec[0]
+              | found
+          from_measures || fallback
+        // a problem may carry its own anchor (a top-level call), as a
+        // third element
+        fun anchor_of(p :~ PairList) :~ Syntax:
+          if p.length() > 2 && p[2]
+          | p[2]
+          | anchor_for(p[0])
+        let msgs:
+          for List (p :~ PairList: problems):
+            let anchor = anchor_of(p)
+            let loc = Syntax.srcloc(anchor)
+            let loc_prefix:
+              if loc is_a Srcloc && !form
+              | "" +& (loc :~ Srcloc).source
+                  +& (if (loc :~ Srcloc).line | ":" +& (loc :~ Srcloc).line | "")
+                  +& ": "
+              | ""
+            loc_prefix +& p[1]
+        let first_anchor = anchor_of(problems[0])
+        syntax_meta.error("refinement checking failed\n  "
+                            +& String.join(msgs, "\n  "),
+                          first_anchor)
+
+  // Chain onto any previously installed hook so extensions compose.
+  def previous_hook = fr.finish_frame_hook()
+  fr.finish_frame_hook(fun (context):
+                         previous_hook(context)
+                         cond
+                         | context == #'module: run_checks()
+                         | context == #'interaction: run_interaction_checks()
+                         | ~else: #void)
+
+// ------------------------------------------------------------------
+// `liquid_module_end()`: placed last in every module by the reader.
+// Expands to a compile-time registration of the module's records, so
+// that the interactions window can check against them.
+
+decl.macro 'liquid_module_end()':
+  let payload = enc_list([enc_list(fun_stash.map(enc_fun)),
+                          enc_list(def_stash.map(enc_def)),
+                          enc_list(ctor_stash.map(enc_ctor)),
+                          enc_list(measure_stash.map(enc_measure))])
+  'meta:
+     register_module('$payload')'
+
+// ------------------------------------------------------------------
+// Refinement braces that reach the type parser directly are in a
+// position the checker does not support; fail closed with a message.
+type_expr.just_macro '#%braces $g ...':
+  ~op_stx self
+  syntax_meta.error("refinement braces are only checked on `fun` parameters, "
+                      +& "`fun` return types, `Boxof` parameter elements, `def` "
+                      +& "annotations, and datatype fields; this position is not "
+                      +& "supported (a `Listof` or `Mapof` element, a function type, "
+                      +& "or an anonymous `fun`)",
+                    self)
+
+// ------------------------------------------------------------------
+// `fun` — three space facets, mirroring shplait's own definition.
+
+// ------------------------------------------------------------------
+// Refinements are checked only on top-level definitions.
+//
+// The checker reads a definition's refinements as the specification of
+// a top-level entity: a function whose calls it finds by name, a `def`
+// the rest of the module sees.  Inside another definition (a function
+// body, a `let` body) or on an anonymous function, a refinement would
+// need closures to be modelled, so it is rejected here with a message
+// that says so, instead of reaching shplait's parser or the checker
+// and failing there for a reason that is not the real one.
+meta:
+  // Is the definition being expanded inside another one?  At the top of
+  // a module the context is `module`, at the prompt `top-level`, inside
+  // a body an internal-definition context (a list).
+  fun internal_definition() :: Boolean:
+    rkt.#{syntax-local-context}() is_a PairList
+
+  fun refinement_only_at_top_level(what :: String, advice :: String, where_stx):
+    syntax_meta.error("refinements are checked only on definitions at the top level of "
+                        +& "the module, and " +& what +& " is defined inside another "
+                        +& "definition; " +& advice,
+                      where_stx)
+
+  def function_advice:
+    "define it at the top level, passing it what it uses from the enclosing "
+      +& "definition as parameters, or drop the refinement"
+
+  fun refined_anonymous(where_stx):
+    syntax_meta.error("refinements on an anonymous `fun` are not checked (the checker "
+                        +& "follows a function's calls by its name); define the function "
+                        +& "with `fun NAME(...)` at the top level of the module",
+                      where_stx)
+
+  fun reject_refined_anonymous_params(args :: List):
+    for (a: args):
+      match a
+      | '{$_ ...}': refined_anonymous(a)
+      | ~else: #void
+
+  // `:: {r :: T | P}` as an anonymous function's return type
+  fun reject_refined_anonymous_return(tail :: Syntax):
+    match tail
+    | '$(_ && '::') $(b && '{$_ ...}') $_ ...': refined_anonymous(b)
+    | ~else: #void
+
+  fun any_refined(preds :: List) :: Boolean:
+    for values(found = #false) (p: preds):
+      found || (match p
+                | '': #false
+                | ~else: #true)
+
+// ------------------------------------------------------------------
+// `fun` — three space facets, mirroring shplait's own definition.
+
+// Value space: shplait's `def` asks the value space for a RHS type.
+value.macro
+| 'fun ($arg, ...) $tail ...':
+    reject_refined_anonymous_params([arg, ...])
+    reject_refined_anonymous_return('$tail ...')
+    match 'sh.fun ($arg, ...) $tail ...'
+    | '$(v :: value_meta.Parsed)' when v.unwrap(): v
+    | ~else: '#false'
+| 'fun $tail ...':
+    match 'sh.fun $tail ...'
+    | '$(v :: value_meta.Parsed)' when v.unwrap(): v
+    | ~else: '#false'
+| 'fun': '#false'
+
+// Expression space: anonymous functions.  Their parameters and return
+// type may not be refined (above); everything else forwards to shplait.
+expr.macro
+| 'fun ($arg, ...) $tail ...:
+     $body':
+    reject_refined_anonymous_params([arg, ...])
+    reject_refined_anonymous_return('$tail ...')
+    'sh.fun ($arg, ...) $tail ...:
+       $body'
+// Inside parentheses, shplait's parser stops an anonymous `fun` at a
+// return type's `::`, so the macro sees only `fun (...)`; shplait
+// would then say "expected either `::` or `:`" about a `::` that is
+// there.
+| 'fun ($arg, ...)':
+    ~op_stx self
+    syntax_meta.error("expected `:` and a body after the arguments of an anonymous `fun`; "
+                        +& "inside parentheses shplait does not accept a return type (`:: T`) "
+                        +& "on an anonymous `fun`, so drop it there or write the `fun` "
+                        +& "without parentheses",
+                      self)
+| 'fun $tail ...':
+    'sh.fun $tail ...'
+
+// Definition space: named functions — the checked form at the top
+// level.  A function defined inside another one is handed to shplait
+// unrecorded: it may not carry refinements, and the calls in its body
+// are checked as part of the enclosing function (see verifier.rkt).
+defn.macro
+| 'fun $(id :: Identifier) ($(a :: RArg), ...) :: {$(r :: Identifier) :: $rt ... | $rg; ...}:
+     $body':
+    when internal_definition()
+    | refinement_only_at_top_level("function `" +& Syntax.unwrap(id) +& "`", function_advice, id)
+    stash_fun([id,
+               [[a.binder, a.base, refinement_of(a.bound, a.pred), a.kind], ...],
+               [r, '$rt ...', join_groups([rg, ...])],
+               '$rt ...',
+               body])
+    'sh.fun $id ($(a.cleaned), ...) :: $rt ...:
+       $body'
+| 'fun $(id :: Identifier) ($(a :: RArg), ...) :: $ret ...:
+     $body':
+    cond
+    | !internal_definition():
+        stash_fun([id,
+                   [[a.binder, a.base, refinement_of(a.bound, a.pred), a.kind], ...],
+                   #false,
+                   '$ret ...',
+                   body])
+    | any_refined([a.pred, ...]):
+        refinement_only_at_top_level("function `" +& Syntax.unwrap(id) +& "`", function_advice, id)
+    | ~else: #void
+    'sh.fun $id ($(a.cleaned), ...) :: $ret ...:
+       $body'
+| 'fun $(id :: Identifier) ($(a :: RArg), ...):
+     $body':
+    cond
+    | !internal_definition():
+        stash_fun([id,
+                   [[a.binder, a.base, refinement_of(a.bound, a.pred), a.kind], ...],
+                   #false,
+                   '',
+                   body])
+    | any_refined([a.pred, ...]):
+        refinement_only_at_top_level("function `" +& Syntax.unwrap(id) +& "`", function_advice, id)
+    | ~else: #void
+    'sh.fun $id ($(a.cleaned), ...):
+       $body'
+
+// ------------------------------------------------------------------
+// `let` — shplait's, except that a refinement (or any annotation)
+// written on its binding gets a message saying it cannot have one.
+
+// As in shplait: a `let` is not a syntactic value.  Without this, the
+// value-space parse of `def x = (let y = e: b)` reads `let` as an
+// identifier and fails at `y`.
+value.non_macro let
+
+expr.macro
+| 'let $(b && '{$_ ...}') $_ ...':
+    syntax_meta.error("a `let` binding cannot carry a refinement: refinements are checked "
+                        +& "only on definitions at the top level of the module (inside the "
+                        +& "body the checker still knows the name equals its right-hand side)",
+                      b)
+| 'let $(_ :: Identifier) $(op && '::') $_ ...':
+    syntax_meta.error("a `let` binding cannot carry a type or a refinement; write "
+                        +& "`let NAME = EXPRESSION: BODY` (inside the body the checker knows "
+                        +& "the name equals the expression)",
+                      op)
+| 'let $(x :: Identifier) = $rhs ...:
+     $body':
+    'sh.let $x = $rhs ...:
+       $body'
+| 'let $_ ...':
+    ~op_stx self
+    syntax_meta.error("expected `let NAME = EXPRESSION: BODY`", self)
+
+// ------------------------------------------------------------------
+// `type` — datatype declarations whose fields may carry refinements.
+// The braces are stripped before shplait's HM sees the declaration,
+// and the field predicates are stashed.  Any shape this pattern does
+// not cover (type aliases, say) forwards to shplait untouched.
+
+decl.macro
+| 'type $(name :: Identifier) $ntail ...
+   | $(ctor :: Identifier)($(f :: TField), ...)
+   | ...':
+    [stash_ctor([ctor,
+                 name,
+                 [[f.fname, f.base, refinement_of(f.bound, f.pred)], ...]]),
+     ...]
+    'sh.type $name $ntail ...
+     | $ctor($(f.cleaned), ...)
+     | ...'
+| 'type $form ...':
+    'sh.type $form ...'
+
+// ------------------------------------------------------------------
+// `measure fun` — a function the checker may call inside predicates.
+// Exactly one parameter, of a datatype declared in this module, and a
+// body that is one `match` on that parameter.  It is stashed for the
+// verifier and handed to shplait as an ordinary function, so at run
+// time it is just a function.
+
+defn.macro
+| 'measure fun $(id :: Identifier) ($(x :: Identifier) :: $pt ..., ...) :: $rt ...:
+     $body':
+    when internal_definition()
+    | syntax_meta.error("a `measure fun` must be defined at the top level of the module", id)
+    stash_measure([id, [[x, '$pt ...'], ...], '$rt ...', body])
+    'sh.fun $id ($x :: $pt ..., ...) :: $rt ...:
+       $body'
+| 'measure $form ...':
+    ~op_stx self
+    syntax_meta.error("expected `measure fun NAME(PARAM :: TYPE) :: TYPE: match PARAM | ...`",
+                      self)
+
+// ------------------------------------------------------------------
+// `def` — refined annotations are stripped and stashed; everything
+// else forwards to shplait untouched.
+
+defn.macro
+| 'def $(id :: Identifier) :: {$(r :: Identifier) :: $t ... | $g; ...} = $rhs ...':
+    when internal_definition()
+    | refinement_only_at_top_level("`def " +& Syntax.unwrap(id) +& "`",
+                                   "write it without the refinement (the checker still "
+                                     +& "knows the name equals its right-hand side), or state "
+                                     +& "the claim on a top-level function",
+                                   id)
+    stash_def([id, [r, '$t ...', join_groups([g, ...])], '$t ...', '$rhs ...'])
+    'sh.def $id :: $t ... = $rhs ...'
+| 'def $form ...':
+    'sh.def $form ...'

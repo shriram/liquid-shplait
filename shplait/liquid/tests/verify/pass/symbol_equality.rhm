@@ -1,0 +1,16 @@
+#lang shplait/liquid
+// Symbols are modelled: equality and inequality, and literals #'x.
+
+type Tag
+| tag(name :: Symbol, n :: Int)
+
+fun bump(t :: Tag) :: {u :: Tag | tagged(u, #'done) || tagged(u, #'more)}:
+  match t
+  | tag(name, n):
+      if n > 0
+      | tag(#'more, n - 1)
+      | tag(#'done, 0)
+
+measure fun tagged(t :: Tag, x :: Symbol) :: Boolean:
+  match t
+  | tag(name, n): name == x

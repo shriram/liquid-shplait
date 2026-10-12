@@ -1,0 +1,9 @@
+#lang shplait/liquid
+
+// Sum of two positives is positive.
+// VC: (a > 0) ∧ (b > 0) ⊨ (a + b > 0).
+
+fun add_pos({a :: Int | a > 0},
+            {b :: Int | b > 0})
+    :: { s :: Int | s > 0 }:
+  a + b

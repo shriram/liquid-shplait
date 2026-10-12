@@ -1,0 +1,8 @@
+#lang shplait/liquid
+
+// Adding 1 to a value below 100 keeps it below 101 (and positive).
+// VC: (0 < n && n < 100) ⊨ (0 < n + 1 && n + 1 <= 100).
+
+fun bump({n :: Int | 0 < n && n < 100})
+    :: { y :: Int | 0 < y && y <= 100 }:
+  n + 1

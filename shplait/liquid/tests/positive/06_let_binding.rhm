@@ -1,0 +1,11 @@
+#lang shplait/liquid
+
+// Refinement annotation on a top-level def.  The right-hand side is
+// checked against the predicate at compile time (see the
+// def_violates case in verify_fail.rhm for the rejection).
+
+def n :: {k :: Int | k > 0} = 5
+
+fun twice(x :: Int) :: Int: x * 2
+
+twice(n)

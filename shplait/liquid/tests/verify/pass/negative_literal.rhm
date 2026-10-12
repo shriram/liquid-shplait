@@ -1,0 +1,13 @@
+#lang shplait/liquid
+
+// Prefix `-` and `!` are part of the checked subset, so a negative
+// literal does not have to be written as `0 - n`.
+
+fun floor_at(n :: Int) :: { y :: Int | y >= -5 }:
+  max(n, -5)
+
+fun not_positive(n :: Int) :: { y :: Boolean | y == true }:
+  !(n > 0) || n > 0
+
+floor_at(-100)
+not_positive(3)

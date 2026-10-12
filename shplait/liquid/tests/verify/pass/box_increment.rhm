@@ -1,0 +1,8 @@
+#lang shplait/liquid
+
+// Incrementing a Boxof({n | n >= 0}) is always safe: unbox(b) >= 0 and
+// adding 1 keeps it non-negative.  The verifier picks this up via the
+// Boxof element refinement on the parameter b and the unbox built-in.
+
+fun increment(b :: Boxof({ n :: Int | n >= 0 })) :: Void:
+  set_box(b, unbox(b) + 1)

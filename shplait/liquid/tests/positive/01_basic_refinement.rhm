@@ -1,0 +1,10 @@
+#lang shplait/liquid
+
+// Smallest exercise of the refinement surface: a refined parameter,
+// a plain return.  The verifier checks the (single) call site at the
+// bottom of the file against the parameter's predicate.
+
+fun double({n :: Int | n > 0}) :: Int:
+  n * 2
+
+double(5)
