@@ -1,0 +1,5 @@
+compiled/
+*~
+.DS_Store
+doc/
+doc-build/

@@ -1,0 +1,11 @@
+#lang shplait/liquid
+
+// README: What a body may contain.
+
+fun discounted({price :: Int | price >= 0},
+               {pct :: Int | 0 <= pct && pct <= 100})
+    :: {out :: Int | out >= 0}:
+  def off = price * pct / 100
+  max(0, price - off)
+
+discounted(1999, 20)

@@ -1,0 +1,68 @@
+#lang shplait/liquid
+
+// An index into a particular string s: the refinement on i mentions
+// the other parameter, s.
+
+fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+  string_get(s, i)
+
+check:
+  safe_get("hello", 1)
+  ~is Char"e"
+
+// error: 5 >= 0 && 5 < string_length("hello") is violated
+// safe_get("hello", 5)
+// error: -1 >= 0 && -1 < string_length("hello") is violated
+// safe_get("hello", -1)
+
+// The claim can use facts about variables.
+fun first_char({s :: String | string_length(s) > 0}) :: Char:
+  safe_get(s, 0)
+fun last_char({s :: String | string_length(s) > 0}) :: Char:
+  safe_get(s, string_length(s) - 1)
+// error: violated when string_length(s) = 0
+/*
+fun last_char2(s :: String) :: Char:
+  safe_get(s, string_length(s) - 1)
+*/
+
+check:
+  first_char("hello")
+  ~is Char"h"
+check:
+  last_char("hello")
+  ~is Char"o"
+
+// A test supplies the fact: in the then arm, i is known to be in range.
+fun try_get(s :: String, i :: Int) :: Optionof(Char):
+  if i >= 0 && i < string_length(s)
+  | some(safe_get(s, i))
+  | none()
+
+check:
+  try_get("hello", 1)
+  ~is some(Char"e")
+check:
+  try_get("hello", 5)
+  ~is none()
+
+// A loop, written as recursion: the test that ends it is also what
+// makes the access safe.
+fun count_from(s :: String, c :: Char, {i :: Int | i >= 0}) :: Int:
+  if i >= string_length(s)
+  | 0
+  | (if safe_get(s, i) == c | 1 | 0) + count_from(s, c, i + 1)
+// error: violated when i = 0, string_length(s) = 0
+/*
+fun count_from2(s :: String, c :: Char, {i :: Int | i >= 0}) :: Int:
+  if i > string_length(s)
+  | 0
+  | (if safe_get(s, i) == c | 1 | 0) + count_from2(s, c, i + 1)
+*/
+
+fun count(s :: String, c :: Char) :: Int:
+  count_from(s, c, 0)
+
+check:
+  count("hello", Char"l")
+  ~is 2

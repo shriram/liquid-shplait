@@ -1,0 +1,39 @@
+#lang rhombus/static/and_meta
+import:
+  rhombus/rx open
+
+export:
+  check_rejects
+
+// The collection under test; a rename of the package changes only this.
+meta:
+  def collection = "shplait/liquid"
+
+fun enable_source(e):
+  parameterize { Evaluator.current: e }:
+    eval('import: lib("racket/base.rkt") as rkt')
+    eval('rkt.#{error-print-source-location}(#true)')
+
+// `check_rejects: <program> ~throws "<text>"` checks that the module
+// <program>, in the language under test, is rejected with an error
+// whose message contains <text>.  Each case gets a fresh evaluator.
+// `module ~lang` bypasses the language's reader, so the prelude and
+// trailer the reader adds (see main.rkt) are added here.
+expr.macro 'check_rejects:
+              $body
+              ...
+              ~throws $msg ...':
+  ~all_stx: stx
+  let lang = Syntax.make(collection +& ".rkt")
+  let prelude = Syntax.make(collection +& "/refinements.rhm")
+  'block:
+     let e = Evaluator.make_rhombus()
+     enable_source(e)
+     $('check'.relocate(stx.srcloc())):
+       ~eval: e
+       module m ~lang lib($lang):
+         import: open: lib($prelude)
+         $body
+         ...
+         liquid_module_end()
+       ~throws (rx_in'$(msg.replace_scopes('x')) ...')'

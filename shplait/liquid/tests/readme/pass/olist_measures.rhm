@@ -1,0 +1,14 @@
+#lang shplait/liquid
+type OList
+| onil()
+| ocons(hd :: Int, tl :: {t :: OList | is_onil(t) || ohd(t) >= hd})
+
+measure fun is_onil(l :: OList) :: Boolean:
+  match l
+  | onil(): #true
+  | ocons(h, t): #false
+
+measure fun ohd(l :: OList) :: Int:
+  match l
+  | onil(): 0
+  | ocons(h, t): h

@@ -1,0 +1,10 @@
+#lang shplait/liquid
+
+// Absolute value yields a non-negative result on both branches.
+// VC fans out per branch: PATH=n>=0 with body=n; PATH=n<0 with body=-n.
+
+fun safe_abs({n :: Int | n > -1000 && n < 1000})
+    :: { y :: Int | y >= 0 }:
+  if n >= 0
+  | n
+  | 0 - n

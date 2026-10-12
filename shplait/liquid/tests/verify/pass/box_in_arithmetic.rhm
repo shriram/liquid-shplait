@@ -1,0 +1,8 @@
+#lang shplait/liquid
+
+// unbox(b) used inside a larger arithmetic expression.  The same fresh
+// variable is shared between the guard and the body via the per-function
+// unbox cache.
+
+fun add_two_safe(b :: Boxof({ n :: Int | n >= 0 })) :: Void:
+  set_box(b, unbox(b) + unbox(b) + 2)

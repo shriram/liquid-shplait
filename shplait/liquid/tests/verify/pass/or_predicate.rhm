@@ -1,0 +1,8 @@
+#lang shplait/liquid
+
+// Predicate uses `||`.  The verifier must handle disjunction in both
+// precondition and postcondition.
+
+fun classify_sign({n :: Int | n > 5 || n < -5})
+    :: { y :: Int | y > 4 || y < -4 }:
+  n

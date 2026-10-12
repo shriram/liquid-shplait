@@ -1,0 +1,808 @@
+#lang shplait
+import:
+  open: "eval.rhm"
+
+// Programs the refinement checker rejects: each has an obligation that does not hold.
+// Each case checks the rejection message.
+
+// assert_violated
+//
+// Nothing establishes `n > 0`.  (The call below then assumes it: only
+// the assertion is reported.)
+check_rejects:
+  fun needs_positive({k :: Int | k > 0}) :: Int:
+    k
+
+  fun f(n :: Int) :: Int:
+    assert(n > 0)
+    needs_positive(n)
+  ~throws "assert: the claim `n > 0` is violated when n ="
+
+// box_argument_violates
+//
+// The initial contents of a box passed to a Boxof-refined parameter
+// must satisfy the element refinement; otherwise this program would
+// print -5 while claiming `y >= 0`.
+check_rejects:
+  fun readback(b :: Boxof({v :: Int | v >= 0})) :: {y :: Int | y >= 0}:
+    unbox(b)
+
+  def bx = box(-5)
+
+  readback(bx)
+  ~throws "initial contents of box `bx`"
+
+// box_decrement
+//
+// The bounded_counter pull-test bug: subtracting 1 from a counter
+// whose declared invariant is n >= 0 can drive it below zero.
+//
+// Counterexample expected: when the box's contents are 0, the new
+// value would be -1, violating the box's element refinement.
+check_rejects:
+  fun decrement(b :: Boxof({ n :: Int | n >= 0 })) :: Void:
+    set_box(b, unbox(b) - 1)
+  ~throws "is violated"
+
+// box_escapes
+//
+// A Boxof parameter used anywhere other than unbox/set_box/a
+// matching Boxof position could be aliased into a second view of
+// the same cell, so the occurrence is an error.
+check_rejects:
+  fun leak(b :: Boxof({v :: Int | v >= 0})) :: Boxof(Int):
+    b
+  ~throws "may be used only in `unbox(b)`"
+
+// box_forward_to_unrefined
+//
+// Forwarding a refined box into a parameter that carries no element
+// refinement would let the callee write anything into it, so the
+// forward is rejected rather than the claim silently dropped.
+check_rejects:
+  fun anything(b :: Boxof(Int)) :: Void:
+    set_box(b, -5)
+
+  fun keeper(b :: Boxof({v :: Int | v >= 0})) :: Void:
+    anything(b)
+  ~throws "needs a `Boxof` with no element refinement"
+
+// box_set_negative_literal
+//
+// Set a Boxof({n | n >= 0}) to a value that's always negative.
+// Counterexample is the obligation itself: the value -3 is not >= 0.
+check_rejects:
+  fun set_to_neg(b :: Boxof({ n :: Int | n >= 0 })) :: Void:
+    set_box(b, 0 - 3)
+  ~throws "is violated"
+
+// box_stale_after_call
+//
+// The value read from a box before a call that can write to it is
+// not assumed to still be there afterwards.  If the checker reused
+// the earlier read, `a - unbox(b)` would look like 0 and this
+// program would be accepted; with the cache invalidated it is
+// correctly refuted.
+check_rejects:
+  fun bump(b :: Boxof({ v :: Int | v >= 0 })) :: Void:
+    set_box(b, unbox(b) + 1)
+
+  fun stale(b :: Boxof({ v :: Int | v >= 0 })) :: Void:
+    def a = unbox(b)
+    bump(b)
+    set_box(b, a - unbox(b))
+  ~throws "is violated"
+
+// box_subtract_constant
+//
+// Subtract a constant larger than the box's lower bound allows.
+// Counterexample: when unbox(b) = 0, result = -5.
+check_rejects:
+  fun bad_offset(b :: Boxof({ n :: Int | n >= 0 })) :: Void:
+    set_box(b, unbox(b) - 5)
+  ~throws "is violated"
+
+// box_two_views
+//
+// One box may not be viewed both as a plain `Boxof(Int)` (which may
+// be written freely) and as a refined `Boxof({v | v >= 0})` (whose
+// contents are then assumed non-negative): if it could, `readback`
+// would return -5 while claiming a non-negative result.
+check_rejects:
+  fun launder(b :: Boxof(Int)) :: Void:
+    set_box(b, -5)
+
+  fun readback(b :: Boxof({v :: Int | v >= 0})) :: {y :: Int | y >= 0}:
+    unbox(b)
+
+  def bx = box(1)
+
+  launder(bx)
+  readback(bx)
+  ~throws "may be viewed through only one element refinement"
+
+// call_constant
+//
+// Call with a literal that violates the callee's precondition.
+check_rejects:
+  fun helper({x :: Int | x > 0}) :: Int:
+    x
+
+  fun caller(unused :: Int) :: Int:
+    helper(0)
+  ~throws "is violated"
+
+// call_guard_too_weak
+//
+// Guard is `y > -5`, which is not strong enough to imply the callee's
+// `v > 0`.  Expect a counterexample like y = 0 or y = -3.
+check_rejects:
+  fun helper({x :: Int | x > 0}) :: Int:
+    x * 2
+
+  fun caller(y :: Int) :: Int:
+    if y > -5
+    | helper(y)
+    | 0
+  ~throws "is violated"
+
+// call_unsafe
+//
+// Caller knows only w >= 0, callee demands v > 0.  Counterexample at
+// the call-site obligation: y = 0 violates the callee's refinement.
+check_rejects:
+  fun helper({x :: Int | x > 0}) :: Int:
+    x * 2
+
+  fun caller({y :: Int | y >= 0}) :: Int:
+    helper(y)
+  ~throws "is violated"
+
+// cond_bad_default
+//
+// Cond with a default branch that violates the postcondition.
+// First branch returns n (positive), but the else branch returns n + 1.
+// When n = -1 the else fires and produces 0, which is not > 0.
+check_rejects:
+  fun bad_pos({n :: Int | n > -1000 && n < 1000})
+      :: { y :: Int | y > 0 }:
+    cond
+    | n > 0: n
+    | ~else: n + 1
+  ~throws "is violated"
+
+// cons_head_call_checked
+//
+// Companion to verify/pass/cons_unmodelled_head.rhm: the head of a
+// `cons` is not translated, but a call inside it is still checked.
+check_rejects:
+  fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+    string_get(s, i)
+  fun bad(s :: String) :: {l :: Listof(Char) | length(l) == 1}:
+    cons(safe_get(s, 0), [])
+  ~throws "call to `safe_get`, argument 2: the claim `0 >= 0 && 0 < string_length(s)` is violated"
+
+// datatype_field_from_argument
+//
+// Building a refined field out of a parameter is checked against
+// what the parameter guarantees: `n >= 0` allows 0, which is not
+// `r > 0`.
+check_rejects:
+  type Shape
+  | circle(radius :: { r :: Int | r > 0 })
+
+  fun make({n :: Int | n >= 0}) :: Shape:
+    circle(n)
+  ~throws "is violated"
+
+// datatype_field_needs_sibling
+check_rejects:
+  type Box2
+  | box2(w :: {w :: Int | w >= 0}, h :: {h :: Int | h >= w})
+
+  fun wider(b :: Box2) :: Box2:
+    match b
+    | box2(w, h): box2(w + 1, h)
+  ~throws "the claim `h >= w` is violated"
+
+// datatype_field_violated
+//
+// The field obligation fires where the constructor is applied: a
+// radius of 0 does not satisfy `r > 0`.
+check_rejects:
+  type Shape
+  | circle(radius :: { r :: Int | r > 0 })
+
+  def flat = circle(0)
+
+  flat
+  ~throws "is violated"
+
+// def_violates
+//
+// A refined def whose right-hand side breaks the predicate.
+check_rejects:
+  def bound :: {k :: Int | k > 0} = 0 - 5
+  ~throws "definition refinement"
+
+// dependent_arg_def_violated
+//
+// Companion to verify/pass/dependent_arg_def.rhm: once a refined def
+// is substituted into the callee's predicate, an index past its known
+// length is still caught.
+check_rejects:
+  fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+    string_get(s, i)
+
+  def refined :: {h :: String | string_length(h) == 5} = "hello"
+  safe_get(refined, 5)
+  ~throws "the claim `5 >= 0 && 5 < string_length(refined)` is violated"
+
+// dependent_arg_list_def_violated
+//
+// Companion to verify/pass/dependent_arg_def.rhm: a def bound to a
+// call result carries the length its return refinement fixed, so an
+// index equal to that length is caught.
+check_rejects:
+  fun upto({k :: Int | k >= 0}, {n :: Int | n >= k}) :: {l :: Listof(Int) | length(l) == n - k}:
+    if k == n
+    | []
+    | cons(k, upto(k + 1, n))
+
+  fun nth(l :: Listof(Int), {i :: Int | i >= 0 && i < length(l)}) :: Int:
+    match l
+    | []: 0
+    | cons(h, t):
+        if i == 0
+        | h
+        | nth(t, i - 1)
+
+  def xs = upto(0, 5)
+  nth(xs, 5)
+  ~throws "the claim `5 >= 0 && 5 < length(xs)` is violated"
+
+// discount_not_strict
+//
+// Claims the discount STRICTLY reduces the price.
+// Integer division makes this false for small prices: with c = 1 and
+// pct = 1, the discount is (1 * 1) / 100 = 0, so the result equals c.
+// Fixing it means strengthening the precondition or weakening the
+// claim to r <= c (see verify/pass/discount_in_range.rhm).
+check_rejects:
+  fun discount_strict({c :: Int | c > 0},
+                      {pct :: Int | 0 < pct && pct <= 100})
+      :: { r :: Int | r < c }:
+    c - (c * pct) / 100
+  ~throws "is violated"
+
+// error_nested_guard
+//
+// Inside an expression the `error` excludes only `n < 0`; for
+// `0 <= n <= 4` the result is too small.
+check_rejects:
+  fun f(n :: Int) :: {r :: Int | r > 5}:
+    1 + (if n >= 0 | n | error(#'f, "negative"))
+  ~throws "the claim `r > 5` is violated when n ="
+
+// error_only_its_arm
+//
+// An `error` excuses the branch it is in, not the other one.
+check_rejects:
+  fun f(n :: Int) :: {r :: Int | r > 0}:
+    if n > 0
+    | error(#'f, "x")
+    | n
+  ~throws "return [branch 2]: the claim `r > 0` is violated when n ="
+
+// error_other_branch
+//
+// The `error` in the second branch's nested condition excludes only
+// that branch; the first branch still returns 0.
+check_rejects:
+  fun f(n :: Int) :: {r :: Int | r > 0}:
+    if n > 0
+    | 0
+    | (if error(#'f, "x") | 1 | 2)
+  ~throws "return [branch 1]: the claim `r > 0` is violated when n ="
+
+// error_short_circuit
+//
+// The `error` is reached only when `n > 0`: for other `n` the result
+// is `#false`.  Excluding the whole expression because it contains an
+// `error` would accept this.
+check_rejects:
+  fun f(n :: Int) :: {r :: Boolean | r}:
+    n > 0 && error(#'f, "no")
+  ~throws "the claim `r` is violated when n ="
+
+// fail_too_strong
+//
+// Return refinement claims y > 100 but body only adds 1 to a positive n.
+// VC: forall n. (n > 0) implies (n + 1 > 100).  Sat: n = 1 is a witness.
+check_rejects:
+  fun bad({n :: Int | n > 0}) :: { y :: Int | y > 100 }:
+    n + 1
+  ~throws "is violated"
+
+// helper_without_return_type
+//
+// A helper with no return annotation still has its body checked.
+check_rejects:
+  fun double({n :: Int | n > 0}) :: { y :: Int | y > 0 }:
+    n * 2
+
+  fun helper(m :: Int):
+    double(0)
+  ~throws "call to `double`, argument 1"
+
+// if_abs_strict
+//
+// Same as safe_abs but the return refinement is strict.  Counterexample:
+// n = 0 takes the then-branch and returns 0, which is not > 0.
+check_rejects:
+  fun strict_abs({n :: Int | n > -1000 && n < 1000})
+      :: { y :: Int | y > 0 }:
+    if n >= 0
+    | n
+    | 0 - n
+  ~throws "is violated"
+
+// internal_function_call_violated
+//
+// In a function defined inside another, its own parameter `y` is an
+// arbitrary value, so `y + x` need not be positive.
+check_rejects:
+  fun pos({k :: Int | k > 0}) :: Int:
+    k
+
+  fun with_internal(n :: Int) :: Int:
+    def x = n * n + 1
+    fun g(y :: Int) :: Int:
+      pos(y + x)
+    g(1)
+  ~throws "the claim `(y + x) > 0` is violated when"
+
+// let_guard_needed
+//
+// Without the guard of `let_refinement.rhm`'s `guarded`, nothing makes
+// `y` positive.
+check_rejects:
+  fun pos({k :: Int | k > 0}) :: Int:
+    k
+
+  fun unguarded(n :: Int) :: Int:
+    let x = n - 10:
+      let y = x * 3:
+        pos(y)
+  ~throws "call to `pos`, argument 1: the claim `y > 0` is violated"
+
+// let_inner_claim_wrong
+//
+// The outer binding is not known to be non-negative here, so the inner
+// one is not known to be positive.
+check_rejects:
+  fun stacked_wrong(n :: Int) :: {r :: Int | r > 0}:
+    let x = n:
+      let y = x + 1:
+        y
+  ~throws "the claim `r > 0` is violated"
+
+// let_outer_not_inner
+//
+// The inner, positive `x` is in scope only in the inner `let`'s body;
+// the call after it sees the outer `x`, about which nothing is known.
+check_rejects:
+  fun pos({k :: Int | k > 0}) :: Int:
+    k
+
+  fun outer_after_inner(n :: Int) :: Int:
+    let x = n:
+      (let x = max(x, 0 - x) + 1: x) + pos(x)
+  ~throws "call to `pos`, argument 1: the claim `x > 0` is violated when x ="
+
+// let_toplevel_call
+//
+// A call in a top-level `let` body is checked with the `let` variable
+// bound.
+check_rejects:
+  fun pos({k :: Int | k > 0}) :: Int:
+    k
+
+  let k = 0:
+    pos(k)
+  ~throws "top-level call to `pos`, argument 1: the claim `k > 0` is violated"
+
+// let_violation
+//
+// The counterexample names the `let` variable.
+check_rejects:
+  fun f({n :: Int | n > 0}) :: {r :: Int | r > 5}:
+    let m = n + 1:
+      m
+  ~throws "the claim `r > 5` is violated when m = 2"
+
+// lifted_violated
+//
+// The lifted function of internal_functions.rhm, called with an
+// argument its refinement rules out.
+check_rejects:
+  fun lifted({x :: Int | x > 0}, {y :: Int | y > x}) :: {r :: Int | r > 0}:
+    y - x
+
+  fun uses_lifted(n :: Int) :: {r :: Int | r > 0}:
+    def x = n * n + 1
+    lifted(x, x)
+  ~throws "call to `lifted`, argument 2: the claim `x > x` is violated"
+
+// local_def_violates
+//
+// A call obligation inside a local `def`'s right-hand side is
+// checked in the environment built so far.
+check_rejects:
+  fun positive({n :: Int | n > 0}) :: Int:
+    n
+
+  fun caller({m :: Int | m >= 0}) :: Int:
+    def step = m - 1
+    positive(step)
+  ~throws "is violated"
+
+// match_body_refined_return
+//
+// `match` is checked: each clause is a branch, and the clause bodies
+// are proved against the return refinement independently.  Here the
+// `neg()` clause returns a negative number, so the claim `y > 0`
+// fails with a counterexample rather than being waved through.
+check_rejects:
+  type Sign
+  | pos()
+  | neg()
+
+  fun to_int({n :: Int | n > 0}, s :: Sign) :: { y :: Int | y > 0 }:
+    match s
+    | pos(): n
+    | neg(): 0 - n
+  ~throws "is violated"
+
+// match_call_unrefined_field
+//
+// The same program with the field refinement removed: nothing is
+// known about `v`, so the call obligation fails.  This is the
+// difference a field refinement makes.
+check_rejects:
+  type Box2
+  | wrap(v :: Int)
+
+  fun halve({n :: Int | n > 0}) :: { y :: Int | y >= 0 }:
+    n / 2
+
+  fun use(b :: Box2) :: { y :: Int | y >= 0 }:
+    match b
+    | wrap(v): halve(v)
+  ~throws "is violated"
+
+// match_field_unguarded
+//
+// A datatype field is an arbitrary value of its type — there are no
+// refinements on fields — so subtracting one from a price cannot be
+// proved non-negative.  The fix is the guard in
+// verify/pass/match_datatype.rhm.
+check_rejects:
+  type Effect
+  | percent_off(p :: Int)
+  | amount_off(a :: Int)
+
+  fun apply_effect({price :: Int | price >= 0}, e :: Effect)
+      :: { out :: Int | out >= 0 }:
+    match e
+    | percent_off(p): price
+    | amount_off(a): price - a
+  ~throws "is violated"
+
+// measure_empty_list
+//
+// The `length(xs) > 0` precondition is checked at call sites: an
+// empty list literal has length 0.
+check_rejects:
+  fun head_or({xs :: Listof(Int) | length(xs) > 0}, d :: Int) :: Int:
+    match xs
+    | cons(h, t): h
+    | []: d
+
+  head_or([], 0)
+  ~throws "is violated"
+
+// measure_return_violated
+check_rejects:
+  type Env
+  | empty()
+  | bind(v :: Int, more :: Env)
+
+  measure fun size(g :: Env) :: Int:
+    match g
+    | empty(): 0
+    | bind(v, more): 1 + size(more)
+
+  fun push(g :: Env, v :: Int) :: {t :: Env | size(t) == size(g) + 1}:
+    match g
+    | empty(): bind(v, empty())
+    | bind(w, more): bind(v, more)
+  ~throws "the claim `size(t) == size(g) + 1` is violated"
+
+// multi_statement_violates
+//
+// Multi-statement bodies are checked, not skipped: the local `def`
+// is part of the verification condition, and the claim is false when
+// price is small (integer division rounds the discount to 0).
+check_rejects:
+  fun discount({price :: Int | price > 0}) :: { out :: Int | out < price }:
+    def off = price / 100
+    price - off
+  ~throws "is violated"
+
+// multi_token_return_type
+//
+// A multi-token return type (Listof(Int)) does not hide a function
+// from the checker.
+check_rejects:
+  fun double({n :: Int | n > 0}) :: { y :: Int | y > 0 }:
+    n * 2
+
+  fun wrap(m :: Int) :: Listof(Int):
+    cons(double(0), [])
+  ~throws "call to `double`, argument 1"
+
+// non_ascii_counterexample
+//
+// A counterexample involving a non-ASCII constructor is shown with the
+// constructor's own name.
+check_rejects:
+  type Light
+  | 🔴(wait :: {w :: Int | w >= 0})
+  | 🟢()
+
+  measure fun is_red(l :: Light) :: Boolean:
+    match l
+    | 🔴(w): #true
+    | 🟢(): #false
+
+  fun go({l :: Light | !is_red(l)}) :: {r :: Light | is_red(r)}:
+    🔴(0)
+
+  fun change(l :: Light) :: {r :: Light | true}:
+    go(l)
+  ~throws "the claim `! is_red(l)` is violated when l = 🔴(0)"
+
+// off_by_one
+//
+// Claims y is positive but the body subtracts.  When n = 1, result = 0.
+// VC: (n > 0) ⊨ (n - 1 > 0).  Sat: n = 1 is the counterexample.
+check_rejects:
+  fun decrement({n :: Int | n > 0}) :: { y :: Int | y > 0 }:
+    n - 1
+  ~throws "is violated"
+
+// poly_id_keep
+//
+// `id(f)` is instantiated at `File`, so its result is a `File` the
+// checker models.  `id` makes no claim relating its result to its
+// argument, so nothing says the result is open: an ordinary
+// counterexample.
+check_rejects:
+  type File
+  | file(fd :: Int, open :: Boolean)
+
+  measure fun is_open(f :: File) :: Boolean:
+    match f
+    | file(d, o): o
+
+  fun id(x :: ?a) :: ?a:
+    x
+
+  fun keep({f :: File | is_open(f)}) :: {r :: File | is_open(r)}:
+    id(f)
+  ~throws "the claim `is_open(r)` is violated when id(...) = file("
+
+// poly_id_pos_int
+//
+// `id(n)` is instantiated at `Int`: an unknown integer, since `id`
+// claims nothing about its result.
+check_rejects:
+  fun id(x :: ?a) :: ?a:
+    x
+
+  fun pos_int({n :: Int | n > 0}) :: {r :: Int | r > 0}:
+    id(n)
+  ~throws "the claim `r > 0` is violated when id(...) ="
+
+// poly_user_unreachable_reached
+//
+// A user-written `unreachable` whose path can be reached.
+check_rejects:
+  fun impossible({u :: Int | false}) :: ?a:
+    error(#'impossible, "reached")
+
+  fun sign(n :: Int) :: {s :: Int | s == 1 || s == -1}:
+    cond
+    | n > 0: 1
+    | n < 0: -1
+    | ~else: impossible(0)
+  ~throws "call to `impossible`, argument 1: the claim `false` is violated when n = 0"
+
+// poly_wrong_spec
+//
+// Inside a polymorphic function a type variable is an uninterpreted
+// type: two values of it may differ, which is the counterexample.
+// Its values print as `?a#0`, `?a#1`, ...
+check_rejects:
+  fun first_of(x :: ?a, y :: ?a) :: {r :: ?a | r == x}:
+    y
+  ~throws "the claim `r == x` is violated when x = ?a#"
+
+// positive_list_violated
+//
+// Building the same list with a non-positive head is refused where
+// the constructor is applied.
+check_rejects:
+  type PosList
+  | pnil()
+  | pcons(head :: { h :: Int | h > 0 }, tail :: PosList)
+
+  def bad = pcons(0, pnil())
+
+  bad
+  ~throws "is violated"
+
+// range_too_narrow
+//
+// Claims the result is strictly < 50 but body produces n + 10 from a
+// value that can be up to 99 inclusive.  Counterexample: n = 99 yields 109.
+check_rejects:
+  fun add_ten({n :: Int | 0 < n && n < 100})
+      :: { y :: Int | y < 50 }:
+    n + 10
+  ~throws "is violated"
+
+// return_too_strong
+//
+// Return-refinement propagation, but the callee's return guarantee is
+// not strong enough.  helper guarantees r > 0; caller claims r > 100.
+// Counterexample: helper_result = 1 (which satisfies r > 0 but not r > 100).
+check_rejects:
+  fun helper({x :: Int | x > 0}) :: { r :: Int | r > 0 }:
+    x
+
+  fun caller({y :: Int | y > 0}) :: { r :: Int | r > 100 }:
+    helper(y)
+  ~throws "is violated"
+
+// sibling_field_violated
+check_rejects:
+  type Span
+  | span(lo :: Int, hi :: {h :: Int | h >= lo})
+
+  fun shift(s :: Span, n :: Int) :: Span:
+    match s
+    | span(lo, hi): span(lo + n, hi)
+  ~throws "the claim `h >= lo` is violated"
+
+// source_names_in_counterexample
+//
+// The counterexample names the `match` pattern variables as written,
+// not by the checker's internal constants.
+check_rejects:
+  type Time
+  | time(hour :: {h :: Int | h >= 0 && h <= 23}, minute :: {m :: Int | m >= 0 && m <= 59})
+
+  fun hour12(t :: Time) :: {y :: Int | y >= 1 && y <= 12}:
+    match t
+    | time(h, m): h mod 12
+
+  hour12(time(0, 5))
+  ~throws "the claim `y >= 1 && y <= 12` is violated when h = "
+
+// statement_in_match_clause_checked
+//
+// A call that is a statement (not the result) of a `match` clause is
+// still checked.
+check_rejects:
+  fun use({n :: Int | n > 0}) :: Void:
+    #void
+
+  fun go(xs :: Listof(Int), m :: Int) :: Int:
+    match xs
+    | []: 0
+    | cons(y, ys):
+        use(m)
+        go(ys, m)
+  ~throws "call to `use`, argument 1: the claim `m > 0` is violated"
+
+// top_def_refinement_only
+//
+// A refined top-level def contributes only its refinement: LIMIT is 12,
+// but all a function may assume is LIMIT > 10, which does not give
+// LIMIT > 11.
+check_rejects:
+  def LIMIT :: {k :: Int | k > 10} = 12
+
+  fun over_eleven() :: {r :: Int | r > 11}:
+    LIMIT
+  ~throws "the claim `r > 11` is violated when LIMIT = 11"
+
+// top_def_violated
+//
+// A function's precondition mentions a top-level def; a caller that
+// passes too little is caught, with the def's value in the
+// counterexample.
+check_rejects:
+  def COST = 2
+
+  fun at_least_cost({n :: Int | n >= COST}) :: Int:
+    n - COST
+
+  fun caller({n :: Int | n >= 1}) :: Int:
+    at_least_cost(n)
+  ~throws "the claim `n >= COST` is violated when COST = 2, n = 1"
+
+// toplevel_def_too_weak
+//
+// A top-level `def` is in scope for the groups that follow it, and
+// contributes exactly its declared refinement -- not its value.  A
+// def known only to be positive does not satisfy `n > 10`.
+check_rejects:
+  fun big({n :: Int | n > 10}) :: Int:
+    n
+
+  def small :: {k :: Int | k > 0} = 5
+
+  big(small)
+  ~throws "is violated"
+
+// toplevel_unreachable_no_definitions
+//
+// A module with no definitions is checked too.
+check_rejects:
+  unreachable()
+  ~throws "call to `unreachable()`: it is reached"
+
+// toplevel_unsafe
+//
+// A top-level call violating a parameter refinement.
+check_rejects:
+  fun double({n :: Int | n > 0}) :: { y :: Int | y > 0 }:
+    n * 2
+
+  double(0)
+  ~throws "top-level call to `double`"
+
+// unknown_callee_in_refined_body
+//
+// `max` is one of the builtins the checker models exactly, so this
+// absurd specification is refuted with a counterexample.
+check_rejects:
+  fun mystery({n :: Int | n > 0}) :: { y :: Int | y > 100 }:
+    max(n, 0)
+  ~throws "is violated"
+
+// unreachable_reached
+//
+// Without the precondition `n != 0`, the `~else` clause is reachable,
+// and the counterexample says how.
+check_rejects:
+  fun sign(n :: Int) :: {s :: Int | s == 1 || s == -1}:
+    cond
+    | n > 0: 1
+    | n < 0: -1
+    | ~else: unreachable()
+  ~throws "call to `unreachable()`: it is reached when n = 0"
+
+// wrong_arithmetic
+//
+// Claims sum of two positives is at least 10, but with a = 1, b = 1
+// the sum is 2.
+check_rejects:
+  fun add_at_least_ten({a :: Int | a > 0},
+                       {b :: Int | b > 0})
+      :: { s :: Int | s >= 10 }:
+    a + b
+  ~throws "is violated"

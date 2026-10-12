@@ -1,0 +1,18 @@
+#lang shplait/liquid
+
+// Call inside an if-branch.  The verifier's call-site obligation
+// currently uses the function's preconditions only (not the branch's
+// path condition), so it conservatively reports the call as unsafe
+// when the caller's spec alone doesn't imply the callee's.
+//
+// To prove this *passes*, the caller's spec must already imply the
+// callee's spec — the branch guard does NOT yet sharpen call-site
+// obligations.  Here y > 5 implies y > 0 unconditionally, so safe.
+
+fun helper({x :: Int | x > 0}) :: Int:
+  x * 2
+
+fun caller({y :: Int | y > 5}) :: Int:
+  if y > 10
+  | helper(y)
+  | y

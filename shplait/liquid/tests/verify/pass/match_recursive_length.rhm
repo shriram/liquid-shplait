@@ -1,0 +1,14 @@
+#lang shplait/liquid
+
+// A recursive function over a list, with `match` for the case split
+// and the function's own declared return refinement assumed at the
+// recursive call (proof by induction on the recursion, i.e. partial
+// correctness).
+
+fun count(xs :: Listof(Int)) :: { y :: Int | y >= 0 }:
+  match xs
+  | []: 0
+  | cons(h, t): 1 + count(t)
+
+count([1, 2, 3])
+count([])

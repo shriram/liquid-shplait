@@ -1,0 +1,37 @@
+#lang shplait/liquid
+// A measure over a recursive datatype, used in a precondition, so that
+// a lookup in the environment is always in range.
+
+type Expr
+| num(n :: Int)
+| var(i :: {k :: Int | k >= 0})
+| plus(l :: Expr, r :: Expr)
+
+type Env
+| empty()
+| bind(v :: Int, more :: Env)
+
+measure fun size(g :: Env) :: Int:
+  match g
+  | empty(): 0
+  | bind(v, more): 1 + size(more)
+
+measure fun scope(e :: Expr) :: Int:
+  match e
+  | num(n): 0
+  | var(i): i + 1
+  | plus(l, r): max(scope(l), scope(r))
+
+fun lookup(g :: Env, {i :: Int | i >= 0 && i < size(g)}) :: Int:
+  match g
+  | empty(): 0
+  | bind(v, more):
+      if i == 0
+      | v
+      | lookup(more, i - 1)
+
+fun eval(g :: Env, {e :: Expr | scope(e) <= size(g)}) :: Int:
+  match e
+  | num(n): n
+  | var(i): lookup(g, i)
+  | plus(l, r): eval(g, l) + eval(g, r)

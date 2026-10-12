@@ -1,0 +1,14 @@
+#lang shplait/liquid
+// A call in a `cond` clause is checked under the clause's guard and
+// the negation of the guards before it.
+
+fun half({n :: Int | n > 0}) :: Void:
+  #void
+
+fun go(n :: Int) :: Void:
+  cond
+  | n <= 0: #void
+  | n == 1: #void
+  | ~else:
+      half(n)
+      #void

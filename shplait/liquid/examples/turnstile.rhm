@@ -1,0 +1,138 @@
+#lang shplait/liquid
+
+def TICKET_COST = 2
+
+// A coin-operated turnstile: 🔒 (locked, holding the credit paid so
+// far) or 🟢 (unlocked). Paying enough unlocks it, keeping any
+// excess; pushing through locks it again with no credit.
+
+type Turnstile
+| 🔒(credit :: {c :: Int | c >= 0})
+| 🟢()
+
+measure fun is_locked(t :: Turnstile) :: Boolean:
+  match t
+  | 🔒(c): #true
+  | 🟢(): #false
+
+measure fun credit(t :: Turnstile) :: Int:
+  match t
+  | 🔒(c): c
+  | 🟢(): 0
+
+// ---- Core: each operation says which state it needs and what it
+// produces. Callers must establish the preconditions.
+
+fun new_turnstile() :: {r :: Turnstile | is_locked(r) && credit(r) == 0}:
+  🔒(0)
+
+// Paying unlocks the turnstile once the credit reaches the fare.
+fun pay({t :: Turnstile | is_locked(t)}, {coin :: Int | coin > 0})
+  :: {r :: Turnstile | (if credit(t) + coin >= TICKET_COST
+                        | !is_locked(r)
+                        | is_locked(r) && credit(r) == credit(t) + coin)}:
+  match t
+  | 🔒(c):
+      if c + coin >= TICKET_COST
+      | 🟢()
+      | 🔒(c + coin)
+  | 🟢(): unreachable()
+
+fun push({t :: Turnstile | !is_locked(t)})
+  :: {r :: Turnstile | is_locked(r) && credit(r) == 0}:
+  🔒(0)
+
+check:
+  pay(new_turnstile(), TICKET_COST)
+  ~is 🟢()
+check:
+  pay(pay(new_turnstile(), 1), 1)
+  ~is 🟢()
+check:
+  pay(new_turnstile(), 1)
+  ~is 🔒(1)
+// The excess is kept: the next rider starts from nothing.
+check:
+  push(pay(new_turnstile(), 3))
+  ~is 🔒(0)
+
+// error: not enough paid
+// push(pay(new_turnstile(), 1))
+// error: pushing a locked turnstile
+// push(new_turnstile())
+// error: paying while unlocked
+// pay(pay(new_turnstile(), 2), 1)
+// error: the next rider has no credit, however much the last one paid
+// push(push(pay(new_turnstile(), 4)))
+
+// ---- Interface: what the hardware calls. Nothing is known about the
+// turnstile or the coin it is given, so these have no preconditions.
+// Each one's test establishes exactly what its core operation needs.
+
+// The coin slot: a coin is taken only by a locked turnstile; otherwise
+// it is returned and the turnstile is unchanged.
+fun insert_coin(t :: Turnstile, coin :: Int) :: Turnstile:
+  if is_locked(t) && coin > 0
+  | pay(t, coin)
+  | t
+// error: inserting without the test
+/*
+fun insert_coin_unchecked(t :: Turnstile, coin :: Int) :: Turnstile:
+  pay(t, coin)
+*/
+
+check:
+  insert_coin(insert_coin(new_turnstile(), 1), 1)
+  ~is 🟢()
+check:
+  insert_coin(insert_coin(new_turnstile(), TICKET_COST), 1)
+  ~is 🟢()
+check:
+  insert_coin(new_turnstile(), 0)
+  ~is 🔒(0)
+
+// Someone pushes on the arm.
+type Response
+| succeeded(after :: Turnstile)
+| refused()
+
+fun press(t :: Turnstile) :: Response:
+  if is_locked(t)
+  | refused()
+  | succeeded(push(t))
+// error: press without the test
+/*
+fun press_unchecked(t :: Turnstile) :: Response:
+  succeeded(push(t))
+*/
+// error: testing the credit instead of the state
+/*
+fun press_wrong(t :: Turnstile) :: Response:
+  if credit(t) >= TICKET_COST
+  | succeeded(push(t))
+  | refused()
+*/
+
+check:
+  press(insert_coin(new_turnstile(), TICKET_COST))
+  ~is succeeded(🔒(0))
+check:
+  press(insert_coin(new_turnstile(), 1))
+  ~is refused()
+check:
+  press(new_turnstile())
+  ~is refused()
+
+// ---- Double spending. Accepted: t's refinement was proved when t was
+// made, and pushing made a new value without changing t, so one
+// payment lets two riders through. Ruling this out needs linearity:
+// push would have to consume t.
+fun double_spend() :: Turnstile:
+  def t = pay(new_turnstile(), TICKET_COST)
+  def after_first = push(t)
+  push(t)
+
+// It runs: a second rider through on the first rider's payment.
+check:
+  double_spend()
+  ~is 🔒(0)

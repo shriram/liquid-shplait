@@ -1,0 +1,14 @@
+#lang shplait/liquid
+
+// List processing coexists with the refinement layer.  Element
+// refinements inside Listof are not yet supported (see
+// unsupported/listof_element.rhm), so this is a compile-and-run
+// exercise with plain types.
+
+fun first_or_default(xs :: Listof(Int), d :: Int) :: Int:
+  match xs
+  | cons(h, _): h
+  | []: d
+
+first_or_default([5, 4, 3], 0)
+first_or_default([], -1)

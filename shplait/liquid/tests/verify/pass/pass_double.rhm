@@ -1,0 +1,7 @@
+#lang shplait/liquid
+
+// double of a positive is positive.
+// VC: forall n. (n > 0) implies (n * 2 > 0).  Trivially unsat negation.
+
+fun double({n :: Int | n > 0}) :: { y :: Int | y > 0 }:
+  n * 2

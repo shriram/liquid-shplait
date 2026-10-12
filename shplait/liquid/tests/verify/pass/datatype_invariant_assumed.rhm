@@ -1,0 +1,20 @@
+#lang shplait/liquid
+// A datatype's field refinements are assumed for every value of the
+// type, not only for values taken apart by `match`.
+
+type Box2
+| box2(w :: {w :: Int | w >= 0}, h :: {h :: Int | h >= w})
+
+measure fun width(b :: Box2) :: Int:
+  match b
+  | box2(w, h): w
+
+measure fun height(b :: Box2) :: Int:
+  match b
+  | box2(w, h): h
+
+fun area(b :: Box2) :: {a :: Int | a >= 0}:
+  width(b) * height(b)
+
+fun taller(b :: Box2) :: {c :: Box2 | height(c) == height(b) + 1}:
+  box2(width(b), height(b) + 1)

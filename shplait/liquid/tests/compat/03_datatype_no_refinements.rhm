@@ -1,0 +1,15 @@
+#lang shplait/liquid
+
+// Datatypes and pattern matching unmolested by the refinement layer.
+
+type Tree
+| leaf()
+| branch(left :: Tree, label :: Int, right :: Tree)
+
+fun size(t :: Tree) :: Int:
+  match t
+  | leaf(): 0
+  | branch(l, _, r): 1 + size(l) + size(r)
+
+def t = branch(branch(leaf(), 1, leaf()), 2, branch(leaf(), 3, leaf()))
+size(t)

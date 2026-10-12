@@ -1,0 +1,10 @@
+#lang shplait/liquid
+
+// Decrement only when the value is positive; safe under the guard.
+// Verifier should combine the Boxof refinement with the path condition
+// from the if to discharge the set_box obligation.
+
+fun safe_decrement(b :: Boxof({ n :: Int | n >= 0 })) :: Void:
+  if unbox(b) > 0
+  | set_box(b, unbox(b) - 1)
+  | set_box(b, 0)

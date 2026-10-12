@@ -1,0 +1,17 @@
+#lang shplait/liquid
+
+// Predicates may use the modelled builtins and `if`, so a functional
+// specification can be an equation.
+
+fun bigger(a :: Int, b :: Int) :: {y :: Int | y == max(a, b)}:
+  if a > b | a | b
+
+fun bigger2(a :: Int, b :: Int) :: {y :: Int | y == (if a > b | a | b)}:
+  max(a, b)
+
+fun next_even({n :: Int | is_even(n)}) :: {y :: Int | is_even(y) && y == n + 2}:
+  add1(add1(n))
+
+bigger(1, 2)
+bigger2(5, 3)
+next_even(4)

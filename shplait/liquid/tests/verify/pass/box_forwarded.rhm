@@ -1,0 +1,14 @@
+#lang shplait/liquid
+
+// A Boxof parameter may be forwarded to another Boxof parameter
+// carrying the same element refinement; the invariant is preserved
+// across the call.
+
+fun bump(b :: Boxof({ n :: Int | n >= 0 })) :: Void:
+  set_box(b, unbox(b) + 1)
+
+fun bump_twice(b :: Boxof({ n :: Int | n >= 0 })) :: Void:
+  bump(b)
+  bump(b)
+
+bump_twice(box(3))

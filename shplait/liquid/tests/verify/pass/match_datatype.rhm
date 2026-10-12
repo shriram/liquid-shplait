@@ -1,0 +1,21 @@
+#lang shplait/liquid
+
+// `match` over a datatype.  Every clause body is proved against the
+// return refinement.  Pattern variables stand for ARBITRARY values
+// of their type (there are no refinements on datatype fields), so
+// the `amount_off` clause has to guard `a` — which is exactly the
+// bug the guard prevents.  See verify/fail/match_field_unguarded.rhm
+// for the same program without the guard.
+
+type Effect
+| percent_off(p :: Int)
+| amount_off(a :: Int)
+
+fun apply_effect({price :: Int | price >= 0}, e :: Effect)
+    :: { out :: Int | out >= 0 }:
+  match e
+  | percent_off(p): max(0, price - price / 2)
+  | amount_off(a): max(0, price - a)
+
+apply_effect(100, percent_off(10))
+apply_effect(100, amount_off(500))

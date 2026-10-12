@@ -1,0 +1,7 @@
+#lang shplait/liquid
+
+// Parenthesized sub-expressions in both predicate and body.
+// VC: ((n > 0)) ⊨ ((n * (3 + 1)) > 0).
+
+fun quadruple({n :: Int | (n > 0)}) :: { y :: Int | y > 0 }:
+  n * (3 + 1)

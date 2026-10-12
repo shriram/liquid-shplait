@@ -1,0 +1,8 @@
+#lang shplait/liquid
+
+// Refinement inside a Boxof type position.
+
+fun peek(b :: Boxof({ x :: Int | x > 0 })) :: Int:
+  unbox(b)
+
+peek(box(7))

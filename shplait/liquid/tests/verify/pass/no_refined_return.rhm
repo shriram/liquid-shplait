@@ -1,0 +1,7 @@
+#lang shplait/liquid
+
+// Refined argument but unrefined return: nothing to verify (no-VC).
+// The verifier should report this as a no-op, not a failure.
+
+fun untyped_return({n :: Int | n > 0}) :: Int:
+  n - 1

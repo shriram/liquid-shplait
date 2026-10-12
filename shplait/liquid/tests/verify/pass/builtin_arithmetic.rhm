@@ -1,0 +1,18 @@
+#lang shplait/liquid
+
+// add1/sub1, shplait's infix `mod`, and the parity predicates.
+// `mod` follows shplait (the sign of the divisor), not SMT-LIB's
+// Euclidean `mod`.
+
+fun next({n :: Int | n >= 0}) :: { y :: Int | y > 0 }:
+  add1(n)
+
+fun remainder({n :: Int | n >= 0}) :: { y :: Int | 0 <= y && y < 10 }:
+  n mod 10
+
+fun parity_agrees(n :: Int) :: { y :: Boolean | y == true }:
+  is_even(n) || is_odd(n)
+
+next(0)
+remainder(37)
+parity_agrees(-3)

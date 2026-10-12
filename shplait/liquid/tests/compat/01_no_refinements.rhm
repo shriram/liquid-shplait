@@ -1,0 +1,14 @@
+#lang shplait/liquid
+
+// Pure shplait, no refinement extension imported.  Regression check:
+// installing the liquid-shplait package should not have changed how
+// vanilla shplait programs compile or run.
+
+fun fact(n :: Int) :: Int:
+  cond
+  | n <= 1: 1
+  | ~else: n * fact(n - 1)
+
+fact(0)
+fact(5)
+fact(10)

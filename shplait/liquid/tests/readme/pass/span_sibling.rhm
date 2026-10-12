@@ -1,0 +1,3 @@
+#lang shplait/liquid
+type Span
+| span(lo :: Int, hi :: {h :: Int | h >= lo})

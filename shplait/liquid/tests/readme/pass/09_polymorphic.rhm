@@ -1,0 +1,12 @@
+#lang shplait/liquid
+
+// README: a polymorphic call is checked at its argument's type, and
+// `id` relates its result to its argument.
+
+fun id(x :: ?a) :: {r :: ?a | r == x}:
+  x
+
+fun pos_int({n :: Int | n > 0}) :: {r :: Int | r > 0}:
+  id(n)
+
+pos_int(5)

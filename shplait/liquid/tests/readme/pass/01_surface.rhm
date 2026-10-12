@@ -1,0 +1,10 @@
+#lang shplait/liquid
+
+// README: Surface syntax.  A refinement wraps a whole binder.
+
+fun double({n :: Int | n > 0}) :: {y :: Int | y > 0}:
+  n * 2
+
+def limit :: {k :: Int | k > 0} = 5
+
+double(limit)

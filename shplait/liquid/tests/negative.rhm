@@ -1,0 +1,78 @@
+#lang shplait
+import:
+  open: "eval.rhm"
+
+// Ill-typed or ill-formed programs that use refinements: each must still
+// be rejected, with shplait's error where shplait catches it.
+
+// 01_wrong_base_type
+//
+// Verify that shplait's HM still rejects base-type mismatches even
+// when the annotation is wrapped in a refinement.  We expect a
+// type error reported by shplait, not a parse error.
+check_rejects:
+  fun double({n :: Int | n > 0}) :: Int:
+    n * 2
+
+  double(#true)  // should fail: Bool passed where Int expected
+  ~throws "typecheck failed: Int vs. Boolean"
+
+// 02_wrong_arity
+//
+// shplait should still report arity errors when refinements are
+// involved.  Expected: a typecheck failure mentioning the wrong number
+// of arguments.
+check_rejects:
+  fun double({n :: Int | n > 0}) :: Int:
+    n * 2
+
+  double(5, 6)  // arity error
+  ~throws "typecheck failed: Int -> Int vs. (Int, Int)"
+
+// 03_body_type_error
+//
+// The body returns a Boolean but the declared return type is a refined
+// Int.  shplait should reject this.
+check_rejects:
+  fun bad({n :: Int | n > 0}) :: { y :: Int | y > 0 }:
+    #true
+
+  bad(5)
+  ~throws "typecheck failed: Int vs. Boolean"
+
+// 04_function_type_mismatch
+//
+// A non-function is passed where a function is expected.  Refinement
+// on the parameter type shouldn't mask the basic type mismatch.
+check_rejects:
+  fun apply_it(f :: ({ n :: Int | n > 0 } -> Int), v :: Int) :: Int:
+    f(v)
+
+  apply_it(5, 10)
+  ~throws "refinement braces are only checked"
+
+// 05_decimal_literal
+//
+// shplait itself has no fractional numbers: `private/literal.rhm`
+// rejects every non-integer literal ("non-integer numbers are not
+// allowed").  Refinements over money therefore have to be written
+// over integer cents.  This test pins the upstream behaviour so the
+// day shplait grows a rational type, it turns red and we revisit.
+check_rejects:
+  fun price(n :: Int) :: Int:
+    n * 1.5
+  ~throws "non-integer numbers are not allowed"
+
+// 06_nested_match_pattern
+//
+// shplait's own `match` patterns are flat: a constructor pattern
+// binds plain variables, and nesting one inside another is a syntax
+// error from shplait, before the refinement checker sees the
+// program.  Pinned here so the restriction is visible.
+check_rejects:
+  fun f(xs :: Listof(Int)) :: Int:
+    match xs
+    | cons(cons(a, b), t): 1
+    | []: 0
+    | cons(h, t): 0
+  ~throws "unexpected term after identifier"

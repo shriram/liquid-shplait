@@ -1,0 +1,6 @@
+#lang shplait/liquid
+
+// Set a Boxof({n | n >= 0}) to a concrete non-negative value.
+
+fun reset(b :: Boxof({ n :: Int | n >= 0 })) :: Void:
+  set_box(b, 5)

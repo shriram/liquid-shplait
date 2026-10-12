@@ -1,0 +1,25 @@
+#lang shplait/liquid
+
+// Identifiers may use any characters shplait allows, including emoji;
+// the checker sends them to Z3 as quoted symbols.
+
+type Light
+| 🔴(wait :: {w :: Int | w >= 0})
+| 🟢()
+
+measure fun is_red(l :: Light) :: Boolean:
+  match l
+  | 🔴(w): #true
+  | 🟢(): #false
+
+fun go({l :: Light | !is_red(l)}) :: {r :: Light | is_red(r)}:
+  🔴(0)
+
+fun change(l :: Light) :: {r :: Light | true}:
+  if is_red(l)
+  | 🟢()
+  | go(l)
+
+check:
+  go(🟢())
+  ~is 🔴(0)

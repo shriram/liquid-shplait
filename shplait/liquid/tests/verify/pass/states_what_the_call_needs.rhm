@@ -1,0 +1,18 @@
+#lang shplait/liquid
+// The manual's fix for needs_induction_times_out: state what the call
+// needs instead of a fact that implies it by induction.
+
+type IntList
+| inil()
+| icons(hd :: Int, tl :: IntList)
+
+measure fun total(l :: IntList) :: Int:
+  match l
+  | inil(): 0
+  | icons(h, t): h + total(t)
+
+fun average({l :: IntList | total(l) >= 0}, {n :: Int | n > 0}) :: {a :: Int | a >= 0}:
+  total(l) / n
+
+fun average_positive({l :: IntList | total(l) >= 0}, {n :: Int | n > 0}) :: Int:
+  average(l, n)

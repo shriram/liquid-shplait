@@ -1,0 +1,20 @@
+#lang shplait/liquid
+
+// The classic "list of positive numbers" exercise.  `Listof` element
+// refinements are not supported, but a user-defined datatype whose
+// head field carries the refinement expresses the same thing and is
+// fully checked: the refinement is proved at every `pcons` and
+// assumed at every `match`.
+
+type PosList
+| pnil()
+| pcons(head :: { h :: Int | h > 0 }, tail :: PosList)
+
+fun total(l :: PosList) :: { y :: Int | y >= 0 }:
+  match l
+  | pnil(): 0
+  | pcons(h, t): h + total(t)
+
+def sample = pcons(3, pcons(4, pnil()))
+
+total(sample)

@@ -1,0 +1,15 @@
+#lang shplait/liquid
+
+// README: datatypes and match.
+
+type Effect
+| percent_off(p :: Int)
+| amount_off(a :: Int)
+
+fun apply_effect({price :: Int | price >= 0}, e :: Effect)
+    :: {out :: Int | out >= 0}:
+  match e
+  | percent_off(p): max(0, price - price / 2)
+  | amount_off(a): max(0, price - a)
+
+apply_effect(1000, amount_off(2000))

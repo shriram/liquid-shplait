@@ -1,0 +1,11 @@
+#lang shplait/liquid
+
+// After `set_box(b, 5)` the checker knows the box holds exactly 5,
+// not merely "something satisfying the element refinement", so the
+// following decrement is provably safe.
+
+fun reset_then_step(b :: Boxof({ v :: Int | v >= 0 })) :: Void:
+  set_box(b, 5)
+  set_box(b, unbox(b) - 1)
+
+reset_then_step(box(0))

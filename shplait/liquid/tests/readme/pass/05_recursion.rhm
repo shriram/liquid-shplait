@@ -1,0 +1,10 @@
+#lang shplait/liquid
+
+// README: a recursive specification is assumed at the recursive call.
+
+fun count(xs :: Listof(Int)) :: {y :: Int | y >= 0}:
+  match xs
+  | []: 0
+  | cons(h, t): 1 + count(t)
+
+count([1, 2, 3])

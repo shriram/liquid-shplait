@@ -1,0 +1,17 @@
+#lang shplait/liquid
+
+// A top-level `def name = box(e)` may be passed to a Boxof-refined
+// parameter: the checker proves that `e` establishes the element
+// refinement, and requires every other use of the same box in the
+// module to agree on that refinement.
+
+fun bump(b :: Boxof({ n :: Int | n >= 0 })) :: Void:
+  set_box(b, unbox(b) + 1)
+
+fun read(b :: Boxof({ n :: Int | n >= 0 })) :: Int:
+  unbox(b)
+
+def counter = box(0)
+
+bump(counter)
+read(counter)

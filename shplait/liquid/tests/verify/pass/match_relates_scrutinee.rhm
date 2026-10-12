@@ -1,0 +1,23 @@
+#lang shplait/liquid
+// `match` on a datatype value tells the checker which constructor it
+// is and what its fields are, so a measure of the scrutinee can be
+// related to the pattern variables.
+
+type Shape
+| circle(r :: {r :: Int | r > 0})
+| rect(w :: {w :: Int | w > 0}, h :: {h :: Int | h > 0})
+
+measure fun is_circle(s :: Shape) :: Boolean:
+  match s
+  | circle(r): #true
+  | rect(w, h): #false
+
+measure fun width(s :: Shape) :: Int:
+  match s
+  | circle(r): 2 * r
+  | rect(w, h): w
+
+fun half_width(s :: Shape) :: {y :: Int | y * 2 <= width(s) && y >= 0}:
+  match s
+  | circle(r): r
+  | rect(w, h): w / 2

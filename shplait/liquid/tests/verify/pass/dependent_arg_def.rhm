@@ -1,0 +1,41 @@
+#lang shplait/liquid
+
+// A parameter refinement that mentions another parameter
+// (`i < string_length(s)`) is read with the actual for `s`
+// substituted, including when that actual is a `def`-bound String or
+// list, top-level or local.  A plain def contributes its known
+// measures, a refined one its refinement, a call result the facts its
+// return refinement gives.
+
+fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+  string_get(s, i)
+
+fun upto({k :: Int | k >= 0}, {n :: Int | n >= k}) :: {l :: Listof(Int) | length(l) == n - k}:
+  if k == n
+  | []
+  | cons(k, upto(k + 1, n))
+
+fun nth(l :: Listof(Int), {i :: Int | i >= 0 && i < length(l)}) :: Int:
+  match l
+  | []: 0
+  | cons(h, t):
+      if i == 0
+      | h
+      | nth(t, i - 1)
+
+fun local_defs({i :: Int | i >= 0 && i < 5}) :: Int:
+  def w = "world"
+  def ys = upto(0, 5)
+  def c = safe_get(w, i)
+  nth(ys, i)
+
+def hello = "hello"
+safe_get(hello, 1)
+
+def refined :: {h :: String | string_length(h) == 5} = "hello"
+safe_get(refined, 4)
+
+def xs = upto(0, 5)
+nth(xs, 4)
+
+local_defs(2)

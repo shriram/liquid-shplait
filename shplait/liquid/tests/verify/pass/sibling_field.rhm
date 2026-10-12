@@ -1,0 +1,17 @@
+#lang shplait/liquid
+// A field predicate may mention the fields declared before it.
+
+type Span
+| span(lo :: Int, hi :: {h :: Int | h >= lo})
+
+measure fun width(s :: Span) :: Int:
+  match s
+  | span(lo, hi): hi - lo
+
+fun widen(s :: Span, {n :: Int | n >= 0}) :: {t :: Span | width(t) == width(s) + n}:
+  match s
+  | span(lo, hi): span(lo, hi + n)
+
+fun clip({s :: Span | width(s) >= 2}) :: {t :: Span | width(t) == width(s) - 2}:
+  match s
+  | span(lo, hi): span(lo + 1, hi - 1)

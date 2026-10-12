@@ -1,0 +1,10 @@
+#lang shplait/liquid
+
+// A refinement may mention a refined top-level `def`, whose
+// refinement is what the function may assume: x > 10 and y > x give
+// y - x > 0.
+
+def x :: {k :: Int | k > 10} = 20
+
+fun g({y :: Int | y > x}) :: {r :: Int | r > 0}:
+  y - x

@@ -1,0 +1,49 @@
+#lang shplait/liquid
+
+// `let x = e: body` binds `x` to a value equal to `e` in `body`, in
+// every position a checked expression may take.  (This program was
+// once a test that `let` is rejected, with a pointer to local `def`.)
+
+fun twice({n :: Int | n > 0}) :: { y :: Int | y > 0 }:
+  let m = n * 2:
+    m
+
+// in the arms of an `if`
+fun magnitude(n :: Int) :: {r :: Int | r >= 0}:
+  if n >= 0
+  | let m = n * 2:
+      m
+  | let m = 0 - n:
+      m
+
+// branches inside the `let` body are split as usual
+fun excess(n :: Int) :: {r :: Int | r >= 0}:
+  let m = n * n:
+    cond
+    | m > 10: m - 10
+    | ~else: 0
+
+// inside an expression
+fun succ_succ({n :: Int | n > 0}) :: {r :: Int | r > 2}:
+  1 + (let m = n + 1: m)
+
+// calls in a `let` body see the binding, here and at the top level
+fun pos({k :: Int | k > 0}) :: Int:
+  k
+
+fun square_plus_one(n :: Int) :: Int:
+  let m = n * n + 1:
+    pos(m)
+
+// a never-returning right-hand side excludes the paths that reach it
+fun positive_or_fail(n :: Int) :: {r :: Int | r > 0}:
+  let m = (if n > 0 | n | error(#'positive_or_fail, "nonpositive")):
+    m
+
+// an unmodelled right-hand side is fine as long as nothing needs it
+fun ignores_string({n :: Int | n > 0}) :: {r :: Int | r > 0}:
+  let s = to_string(n):
+    n
+
+let k = 3:
+  pos(k)

@@ -1,0 +1,19 @@
+#lang shplait
+
+// Built-in functions of `#lang shplait/liquid`, beyond shplait's own.
+// main.rkt provides them as part of the module language, so a program
+// that defines its own `unreachable` or `assert` shadows them rather
+// than colliding with them.
+//
+// At run time they do what their names say.  The refinement checker
+// gives each a proof obligation where it is called (see verifier.rkt):
+// `unreachable()` must be unreachable under the assumptions at the
+// call, and `assert(b)` must hold under them.
+
+fun unreachable() :: ?a:
+  error(#'unreachable, "reached `unreachable()`")
+
+fun assert(b :: Boolean) :: Void:
+  if b
+  | #void
+  | error(#'assert, "assertion failed")

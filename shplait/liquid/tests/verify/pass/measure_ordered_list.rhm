@@ -1,0 +1,28 @@
+#lang shplait/liquid
+// A datatype invariant that mentions an earlier field through a
+// measure: every head is at most the head of its tail.
+
+type OList
+| onil()
+| ocons(hd :: Int, tl :: {t :: OList | is_onil(t) || ohd(t) >= hd})
+
+measure fun is_onil(l :: OList) :: Boolean:
+  match l
+  | onil(): #true
+  | ocons(h, t): #false
+
+measure fun ohd(l :: OList) :: Int:
+  match l
+  | onil(): 0
+  | ocons(h, t): h
+
+fun insert(x :: Int, xs :: OList)
+    :: {r :: OList | !is_onil(r) && ohd(r) == (if is_onil(xs) | x | min(x, ohd(xs)))}:
+  match xs
+  | onil(): ocons(x, onil())
+  | ocons(y, ys):
+      if x <= y
+      | ocons(x, ocons(y, ys))
+      | ocons(y, insert(x, ys))
+
+def three = ocons(1, ocons(2, ocons(3, onil())))

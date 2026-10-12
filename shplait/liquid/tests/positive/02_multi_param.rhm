@@ -1,0 +1,17 @@
+#lang shplait/liquid
+
+// Multiple refined parameters and a refined return: the return
+// obligation (x > 0 && y > 0 entails x + y > 0) is discharged by z3.
+// (Refinements inside function-type positions are not supported; see
+// the 04_function_type_mismatch case in negative.rhm.)
+
+fun add_pos({x :: Int | x > 0},
+            {y :: Int | y > 0})
+    :: { s :: Int | s > 0 }:
+  x + y
+
+fun double({n :: Int | n > 0}) :: Int:
+  n * 2
+
+add_pos(3, 4)
+double(add_pos(1, 2))

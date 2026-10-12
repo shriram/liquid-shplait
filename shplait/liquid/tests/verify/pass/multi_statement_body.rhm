@@ -1,0 +1,19 @@
+#lang shplait/liquid
+
+// A body may name intermediate results with local `def`s before the
+// result expression.  Each local is bound to its right-hand side in
+// the verification condition, so the checker proves the same fact a
+// reader would: subtracting a discount that is at most the price
+// leaves something between 0 and the price.
+//
+// (Deliberately linear: `price * pct / 100` needs nonlinear integer
+// reasoning, which z3 solves only sometimes within the per-obligation
+// timeout.  See verify/pass/discount_in_range.rhm for that shape.)
+
+fun net_of({price :: Int | price >= 0},
+           {off :: Int | 0 <= off && off <= price})
+    :: { out :: Int | 0 <= out && out <= price }:
+  def net = price - off
+  net
+
+net_of(1999, 400)

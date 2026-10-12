@@ -1,0 +1,20 @@
+#lang shplait/liquid
+
+// `cons` needs only its tail's length, so its head may be a call the
+// checker does not model (here `string_get`).  The def of a call
+// result is then indexed through the length its return refinement
+// gives.
+fun chars(s :: String, {k :: Int | k >= 0 && k <= string_length(s)}) :: {l :: Listof(Char) | length(l) == string_length(s) - k}:
+  if k == string_length(s)
+  | []
+  | cons(string_get(s, k), chars(s, k + 1))
+fun nth(l :: Listof(Char), {i :: Int | i >= 0 && i < length(l)}) :: Char:
+  match l
+  | []: string_get("a", 0)
+  | cons(h, t):
+      if i == 0
+      | h
+      | nth(t, i - 1)
+def hello = chars("hello", 0)
+nth(hello, 1)
+nth(chars("hello", 0), 4)

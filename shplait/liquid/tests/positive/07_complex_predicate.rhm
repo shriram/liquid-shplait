@@ -1,0 +1,9 @@
+#lang shplait/liquid
+
+// Refinement predicate is captured opaquely; many surface forms work.
+
+fun in_range({x :: Int | x > 0 && x < 100 && x != 42}) :: Int:
+  x
+
+in_range(10)
+in_range(99)

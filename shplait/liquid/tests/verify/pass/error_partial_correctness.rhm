@@ -1,0 +1,37 @@
+#lang shplait/liquid
+
+// `error(...)` never returns, so a claim about a result holds on any
+// path that reaches it (partial correctness), and only on such paths.
+
+fun big({n :: Int | n > 0}) :: {r :: Int | r > 5}:
+  if n > 5
+  | n
+  | error(#'big, "too small")
+
+fun classify(n :: Int) :: {r :: Int | r == 1 || r == -1}:
+  cond
+  | n > 0: 1
+  | n < 0: -1
+  | ~else: error(#'classify, "zero")
+
+type Shape
+| circle(r :: Int)
+| square(s :: Int)
+
+fun radius(sh :: Shape) :: {r :: Int | r >= 0}:
+  match sh
+  | circle(r): max(r, 0)
+  | square(s): error(#'radius, "not a circle")
+
+// inside an expression: only the arm that errors is excluded
+fun succ_nonneg(n :: Int) :: {r :: Int | r > 0}:
+  1 + (if n >= 0 | n | error(#'succ_nonneg, "negative"))
+
+// a local `def` that errors unless `n > 0`: the rest of the body runs
+// only when it returned, so it may assume `n > 0`
+fun positive_part(n :: Int) :: {r :: Int | r > 0}:
+  def x = if n > 0 | n | error(#'positive_part, "not positive")
+  x
+
+big(7)
+classify(-3)

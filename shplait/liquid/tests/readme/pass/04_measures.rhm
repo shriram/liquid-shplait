@@ -1,0 +1,11 @@
+#lang shplait/liquid
+
+// README: measures let a refinement talk about a value the checker
+// does not otherwise model.
+
+fun head_or({xs :: Listof(Int) | length(xs) > 0}, d :: Int) :: Int:
+  match xs
+  | cons(h, t): h
+  | []: d
+
+head_or([3, 1, 4], 0)

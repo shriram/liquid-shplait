@@ -1,0 +1,20 @@
+#lang shplait/liquid
+
+// `assert(P)` is a proof obligation: `P` must follow from the
+// assumptions at the call.  A statement `assert(P)` is then assumed by
+// the rest of the body.
+
+fun needs_positive({k :: Int | k > 0}) :: Int:
+  k
+
+fun f({n :: Int | n > 2}) :: Int:
+  assert(n > 0)
+  needs_positive(n)
+
+fun g(a :: Int, {b :: Int | b > a}) :: Int:
+  def d = b - a
+  assert(d >= 1)
+  d
+
+assert(1 < 2)
+f(3)

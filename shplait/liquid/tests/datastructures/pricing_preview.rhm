@@ -1,0 +1,44 @@
+#lang shplait/liquid
+
+// Discounts on order lines: range refinements on the numeric
+// parameters, checked at every call site (including the defs at the
+// bottom).  `| true` refinements claim nothing and serve as
+// documentation.
+
+type Line
+| line(product :: String,
+       unit_price :: Int,
+       qty :: Int,
+       price :: Int)
+
+fun mk_raw(product :: String,
+           {unit_price :: Int | unit_price >= 0},
+           {qty :: Int | qty >= 0})
+    :: { l :: Line | true }:
+  line(product, unit_price, qty, unit_price * qty)
+
+fun discount_by_pct({l :: Line | true},
+                    {pct :: Int | 0 < pct && pct <= 100})
+    :: { out :: Line | true }:
+  match l
+  | line(p, up, q, c):
+      line(p, up, q, c - (c * pct) / 100)
+
+fun discount_by_amount({l :: Line | true},
+                       {amt :: Int | amt > 0})
+    :: { out :: Line | true }:
+  match l
+  | line(p, up, q, c):
+      line(p, up, q, c - amt)
+
+fun price_of(l :: Line) :: Int:
+  match l
+  | line(_p, _up, _q, c): c
+
+def raw_latte = mk_raw("latte", 5, 2)              // 10
+def discounted = discount_by_pct(raw_latte, 20)    // 8
+def further = discount_by_amount(discounted, 1)    // 7
+
+price_of(raw_latte)
+price_of(discounted)
+price_of(further)

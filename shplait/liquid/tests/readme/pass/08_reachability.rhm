@@ -1,0 +1,18 @@
+#lang shplait/liquid
+
+// README: `unreachable()` is proved unreachable; `error` excuses only
+// the paths that reach it.
+
+fun sign({n :: Int | n != 0}) :: {s :: Int | s == 1 || s == -1}:
+  cond
+  | n > 0: 1
+  | n < 0: -1
+  | ~else: unreachable()
+
+fun big({n :: Int | n > 0}) :: {r :: Int | r > 5}:
+  if n > 5
+  | n
+  | error(#'big, "too small")
+
+sign(-4)
+big(9)

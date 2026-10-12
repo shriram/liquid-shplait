@@ -1,0 +1,12 @@
+#lang shplait/liquid
+
+// Classify: returns -1, 0, or +1 according to sign.  Return refinement
+// asserts the result is in [-1, 1].  Verifier fans out over the cond
+// clauses with the correct path conditions.
+
+fun classify({n :: Int | n > -1000 && n < 1000})
+    :: { y :: Int | y >= -1 && y <= 1 }:
+  cond
+  | n > 0: 1
+  | n < 0: 0 - 1
+  | ~else: 0
