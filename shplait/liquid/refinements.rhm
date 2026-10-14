@@ -425,8 +425,8 @@ type_expr.just_macro '#%braces $g ...':
   syntax_meta.error("refinement braces are only checked on `fun` parameters, "
                       +& "`fun` return types, `Boxof` parameter elements, `def` "
                       +& "annotations, and datatype fields; this position is not "
-                      +& "supported (a `Listof` or `Mapof` element, a function type, "
-                      +& "or an anonymous `fun`)",
+                      +& "supported (a `Listof`, `Optionof` or `Mapof` element, "
+                      +& "a pair component, a function type, or an anonymous `fun`)",
                     self)
 
 // ------------------------------------------------------------------

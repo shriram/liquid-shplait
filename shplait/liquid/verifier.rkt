@@ -1076,7 +1076,7 @@
            (define (ite-at a b)
              (define sort (T-sort a))
              (unless (and (sort-smt sort) (equal? sort (T-sort b)))
-               (unsup "the two arms of this `if` must have the same modelled type (integer, boolean, or a datatype) for the checker to model it"))
+               (unsup "the two arms of this `if` must have the same modelled type (an integer, a boolean, a symbol, a character, an option, a pair, or a datatype) for the checker to model it"))
              (T (format "(ite ~a ~a ~a)" c (T-smt a) (T-smt b)) sort (hash) #f))
            (values (if (and (flex? a) (flex? b))
                        ;; neither arm returns, or both are of a type only
