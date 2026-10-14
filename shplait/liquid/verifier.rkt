@@ -762,9 +762,24 @@
 
 ;; The measure of a value: an explicit measure when the term carries
 ;; one, otherwise a non-negative constant cached per source name.
+;; The type a measure applies to, as the head of its declared type.
+(define measure-domains
+  (hash 'length '(Listof "a list")
+        'string_length '(String "a string")
+        'array_length '(Arrayof "an array")))
+
 (define (measure-of t0 mname)
   ;; a flexible value measured is a list or a string: unmodelled
   (define t (at-sort t0 'opaque))
+  (unless (eq? (T-sort t) 'opaque)
+    (unsup "`~a` applies to ~a, but was given ~a"
+           mname (second (hash-ref measure-domains mname '(#f "a list or a string")))
+           (term-word t)))
+  (let ([dom (hash-ref measure-domains mname #f)]
+        [ts (hash-ref (T-measures t) '%type #f)])
+    (when (and dom ts (pair? ts) (not (eq? (car ts) (car dom))))
+      (unsup "`~a` applies to ~a, but was given a value of type ~a"
+             mname (second dom) (base-name ts))))
   (when (current-in-measure)
     (unsup "`~a` cannot be used inside a measure; a measure may only use its constructor's fields, arithmetic, and other measures" mname))
   (cond
@@ -1874,7 +1889,9 @@
   (define s (base-sort (param-base p)))
   (if (sort-smt s)
       (t-of (symbol->string (param-name p)) s (param-name p))
-      (T (symbol->string (param-name p)) 'opaque (hash) (param-name p))))
+      (T (symbol->string (param-name p)) 'opaque
+         (if (null? (param-base p)) (hash) (hash '%type (param-base p)))
+         (param-name p))))
 
 ;; Eager declaration check: every declared predicate must be
 ;; translatable, whether or not any obligation ends up using it.
@@ -1893,7 +1910,7 @@
         (let ([s (base-sort base)])
           (if (sort-smt s)
               (t-of "declared_value" s 'declared_value)
-              (t-opaque (hash) 'declared_value))))
+              (t-opaque-typed base 'declared_value))))
       (parameterize ([current-allow-calls #f]
                      [current-extras (box '())]
                      [current-prefix (box '())]
@@ -3076,7 +3093,38 @@
     (parameterize ([current-box-defs box-def-table]
                    [current-top-consts (compute-top-consts groups rdefs)])
       (define all-obls '())
-      (define all-errs (append rec-errs rdef-errs
+      ;; Eager declaration check of datatype field predicates: one the
+      ;; checker cannot read is reported where it is written, not at the
+      ;; first construction.  The other fields of the constructor are in
+      ;; scope, as they are at a construction.
+      (define field-errs
+        (if interaction?
+            '()
+            (for*/list ([(ctor fields) (in-hash (current-ctor-table))]
+                        [f (in-list fields)]
+                        [why (in-value
+                              (and (dfield-refinement f)
+                                   (not (trivially-true? (dfield-refinement f)))
+                                   (with-handlers ([unsupported? unsupported-why])
+                                     (define env
+                                       (for/fold ([e (hash)]) ([g (in-list fields)])
+                                         (define srt (field-sort g))
+                                         (hash-set e (dfield-name g)
+                                                   (if (sort-smt srt)
+                                                       (t-of (symbol->string (dfield-name g)) srt (dfield-name g))
+                                                       (t-opaque-typed (dfield-base g) (dfield-name g))))))
+                                     (match-define (refinement bound pred) (dfield-refinement f))
+                                     (parameterize ([current-allow-calls #f]
+                                                    [current-extras (box '())]
+                                                    [current-prefix (box '())]
+                                                    [current-measure-cache (make-hash)]
+                                                    [current-unbox-cache (make-hash)])
+                                       (bool-of (expr->term pred (hash-set env bound (hash-ref env (dfield-name f))))
+                                                "a datatype field refinement"))
+                                     #f)))]
+                        #:when why)
+              (list ctor (format "the refinement on field `~a` of `~a`: ~a" (dfield-name f) ctor why)))))
+      (define all-errs (append rec-errs rdef-errs field-errs
                                (for/list ([m (in-list box-def-errs)])
                                  (list anchor-name m))))
       (for ([f (in-list fns)]

@@ -376,3 +376,23 @@ check_rejects:
   fun pick({xs :: Listof(Int) | true}) :: { y :: Int | y > 0 }:
     list_get(xs, 0)
   ~throws "neither a function defined in this module nor one of the builtins"
+
+// measure_wrong_kind_field
+//
+// A measure applies to one kind of value: `length` to lists.  A field
+// predicate that applies it to an array is rejected where it is
+// written, before any construction.
+check_rejects:
+  type Matrix
+  | matrix(rows :: {r :: Int | r >= 0},
+           cols :: {c :: Int | c >= 0},
+           cells :: {a :: Arrayof(Int) | length(a) == rows * cols})
+  ~throws "the refinement on field `cells` of `matrix`: `length` applies to a list, but was given a value of type `Arrayof(Int)`"
+
+// measure_wrong_kind_param
+//
+// The same for a parameter: `string_length` applies to strings.
+check_rejects:
+  fun f({xs :: Listof(Int) | string_length(xs) > 0}) :: Int:
+    0
+  ~throws "`string_length` applies to a string, but was given a value of type `Listof(Int)`"
