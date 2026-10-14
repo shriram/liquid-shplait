@@ -386,3 +386,17 @@ check_rejects:
   fun f({xs :: Listof(Int) | string_length(xs) > 0}) :: Int:
     0
   ~throws "`string_length` applies to a string, but was given a value of type `Listof(Int)`"
+
+// pair_measure_on_option
+//
+// `fst` and `snd` apply to pairs.
+check_rejects:
+  fun f({o :: Optionof(Int) | fst(o) > 0}) :: Int:
+    0
+  ~throws "`fst` needs a pair but got an option"
+
+// option_test_on_integer
+check_rejects:
+  fun f({n :: Int | is_some(n)}) :: Int:
+    0
+  ~throws "`is_some` needs an option but got an integer"

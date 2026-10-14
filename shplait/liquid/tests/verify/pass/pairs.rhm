@@ -1,0 +1,33 @@
+#lang shplait/liquid
+
+// Pairs: `values(a, b)`, `fst`, `snd` and `def values(x, y) = p`.
+
+fun swap(p :: Int * Int) :: {q :: Int * Int | fst(q) == snd(p) && snd(q) == fst(p)}:
+  values(snd(p), fst(p))
+
+fun sum_pair({p :: Int * Int | fst(p) > 0 && snd(p) > 0}) :: {r :: Int | r > 1}:
+  def values(a, b) = p
+  a + b
+
+fun label(p :: String * Int) :: {r :: Int | r == snd(p)}:
+  snd(p)
+
+type Pos
+| pos(v :: {p :: Int | p > 0})
+
+fun pair_pos(pr :: Pos * Int) :: {r :: Int | r > 0}:
+  match fst(pr)
+  | pos(x): x
+
+fun first_of(p :: ?a * ?b) :: {r :: ?a | r == fst(p)}:
+  fst(p)
+
+fun use_first() :: {r :: Int | r == 7}:
+  first_of(values(7, #true))
+
+check:
+  swap(values(1, 2))
+  ~is values(2, 1)
+check:
+  sum_pair(values(3, 4))
+  ~is 7

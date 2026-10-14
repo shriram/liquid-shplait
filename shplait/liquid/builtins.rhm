@@ -2,13 +2,14 @@
 
 // Built-in functions of `#lang shplait/liquid`, beyond shplait's own.
 // main.rkt provides them as part of the module language, so a program
-// that defines its own `unreachable` or `assert` shadows them rather
-// than colliding with them.
+// that defines its own `unreachable`, `assert`, `is_none` or `is_some`
+// shadows them rather than colliding with them.
 //
 // At run time they do what their names say.  The refinement checker
 // gives each a proof obligation where it is called (see verifier.rkt):
 // `unreachable()` must be unreachable under the assumptions at the
-// call, and `assert(b)` must hold under them.
+// call, and `assert(b)` must hold under them.  `is_none` and `is_some`
+// test an option, in bodies and in refinement predicates.
 
 fun unreachable() :: ?a:
   error(#'unreachable, "reached `unreachable()`")
@@ -17,3 +18,13 @@ fun assert(b :: Boolean) :: Void:
   if b
   | #void
   | error(#'assert, "assertion failed")
+
+fun is_none(o :: Optionof(?a)) :: Boolean:
+  match o
+  | none(): #true
+  | some(v): #false
+
+fun is_some(o :: Optionof(?a)) :: Boolean:
+  match o
+  | none(): #false
+  | some(v): #true

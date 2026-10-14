@@ -903,3 +903,156 @@ check_rejects:
   fun p(k :: Int -> Int, {n :: Int | n > k(0)}) :: Int:
     n
   ~throws "a refinement predicate may not call `k`"
+
+// option_claim_wrong_branch
+//
+// Options are modelled: the claim fails on each branch, and the
+// counterexample names the values.
+check_rejects:
+  fun try_div(n :: Int, d :: Int) :: {o :: Optionof(Int) | is_none(o) == (d == 0)}:
+    if d == 1
+    | none()
+    | some(n)
+  ~throws "the claim `is_none(o) == (d == 0)` is violated when d = 1"
+
+// option_counterexample_shows_none
+check_rejects:
+  fun get_or(o :: Optionof(Int), dflt :: Int) :: {r :: Int | r > 0}:
+    match o
+    | none(): dflt
+    | some(v): 1
+  ~throws "violated when dflt = 0, o = none()"
+
+// option_counterexample_shows_some
+check_rejects:
+  fun get_or(o :: Optionof(Int), dflt :: Int) :: {r :: Int | r > 0}:
+    match o
+    | none(): 1
+    | some(v): v
+  ~throws "violated when o = some(0), v = 0"
+
+// option_precondition
+//
+// A precondition `is_some(o)` is checked at the call.
+check_rejects:
+  fun content({o :: Optionof(Int) | is_some(o)}) :: Int:
+    match o
+    | none(): unreachable()
+    | some(v): v
+
+  fun use(n :: Int, d :: Int) :: Int:
+    content(if d == 0 | none() | some(n))
+  ~throws "`use`, call to `content`, argument 1"
+
+// option_field_refinement
+//
+// A field refinement on an option is checked at construction.
+check_rejects:
+  type Slot
+  | slot(content :: {o :: Optionof(Int) | is_some(o)})
+
+  fun mk() :: Slot:
+    slot(none())
+  ~throws "`mk`, slot, field `content`: the claim `is_some(o)` is violated"
+
+// option_unknown_content
+//
+// The content of an option the checker does not model is unknown.
+check_rejects:
+  fun named(s :: String) :: {o :: Optionof(String) | is_none(o)}:
+    some(s)
+  ~throws "`named`, return: the claim `is_none(o)` is violated"
+
+// option_nested_counterexample
+//
+// An option inside a datatype, inside an option: the counterexample
+// shows the nested values.
+check_rejects:
+  type Tree
+  | leaf()
+  | node(kid :: Optionof(Tree), n :: Int)
+
+  fun grand_n(t :: Tree) :: {r :: Int | r != 5}:
+    match t
+    | leaf(): 0
+    | node(k, n):
+        match k
+        | none(): 0
+        | some(c):
+            match c
+            | leaf(): 0
+            | node(k2, n2): n2
+  ~throws "c = node(none(), 5)"
+
+// option_type_variable
+//
+// The type variable of `get_or_p` is instantiated at the call; its
+// return claim allows 4.
+check_rejects:
+  fun get_or_p(o :: Optionof(?a), d :: ?a) :: {r :: ?a | r == d || o == some(r)}:
+    match o
+    | none(): d
+    | some(v): v
+
+  fun use(n :: Int) :: {r :: Int | r < 4}:
+    get_or_p(some(3), 4)
+  ~throws "violated when get_or_p(...) = 4"
+
+// option_polymorphic_body
+check_rejects:
+  fun wrap(x :: ?a) :: {o :: Optionof(?a) | o == some(x)}:
+    none()
+  ~throws "`wrap`, return: the claim `o == some(x)` is violated"
+
+// pair_swap_wrong
+check_rejects:
+  fun swap(p :: Int * Int) :: {q :: Int * Int | fst(q) == snd(p) && snd(q) == fst(p)}:
+    values(fst(p), snd(p))
+  ~throws "violated when p = values("
+
+// pair_def_values
+check_rejects:
+  fun sum_pair({p :: Int * Int | fst(p) > 0}) :: {r :: Int | r > 1}:
+    def values(a, b) = p
+    a + b
+  ~throws "violated when a = 1, b = 0"
+
+// pair_nested
+check_rejects:
+  fun nest_pair(p :: (Int * Int) * Optionof(Int)) :: {r :: Int | r != 4}:
+    def values(a, o) = p
+    match o
+    | none(): 0
+    | some(v): v + fst(a)
+  ~throws "a = values("
+
+// char_counterexample
+//
+// A character in a counterexample is shown as a `Char` literal.
+check_rejects:
+  fun is_letter_a(c :: Char) :: {b :: Boolean | b}:
+    c == Char"a"
+  ~throws "violated when c = Char\""
+
+// option_top_level_def
+check_rejects:
+  def o :: {x :: Optionof(Int) | is_some(x)} = none()
+  ~throws "`o`, definition refinement: the claim `is_some(x)` is violated"
+
+// option_in_measure
+//
+// A measure may test an option field.
+check_rejects:
+  type Box2
+  | bx(c :: Optionof(Int))
+
+  measure fun has(b :: Box2) :: Boolean:
+    match b
+    | bx(c): is_some(c)
+
+  fun need({b :: Box2 | has(b)}) :: Int:
+    1
+
+  fun call() :: Int:
+    need(bx(none()))
+  ~throws "the claim `has(bx(none()))` is violated"

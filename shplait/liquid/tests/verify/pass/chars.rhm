@@ -1,0 +1,23 @@
+#lang shplait/liquid
+
+// Characters: `Char"x"` literals and `==`/`!=`.
+
+fun is_letter_a(c :: Char) :: {b :: Boolean | b == (c == Char"a")}:
+  c == Char"a"
+
+fun first_is_x(s :: String) :: Boolean:
+  if string_length(s) > 0
+  | string_get(s, 0) == Char"x"
+  | #false
+
+fun pick({c :: Char | c != Char"λ"}) :: {r :: Int | r == 1}:
+  if c == Char"λ"
+  | unreachable()
+  | 1
+
+check:
+  is_letter_a(Char"a")
+  ~is #true
+check:
+  first_is_x("xyz")
+  ~is #true

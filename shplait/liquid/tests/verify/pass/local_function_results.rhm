@@ -11,6 +11,11 @@ fun f(n :: Int) :: {r :: Int | r >= 0}:
 fun clamp_apply(k :: Int -> Int, n :: Int) :: {r :: Int | r >= 0 && r <= 10}:
   min(10, max(0, k(n)))
 
+// A function value bound by a local `def` is the same.
+fun g_def(n :: Int) :: {r :: Int | r >= 0}:
+  def g = fun (x :: Int): x * x
+  max(0, g(n))
+
 fun call_safe({d :: Int | d != 0}) :: Int:
   10 / d
 
