@@ -744,10 +744,35 @@
         'make_array 2 'string_append 2 'substring 3 'append 2 'reverse 1
         'map 2 'filter 2 'rest 1))
 
-(define builtin-names-text
-  "`max`, `min`, `add1`, `sub1`, `is_even`, `is_odd`, `length`, `string_length`, `array_length`, `is_empty`, `is_cons`, `cons`, `make_array`, `string_append`, `substring`, `append`, `reverse`, `map`, `filter`, `rest`, `error`, `unreachable`, `assert`")
 
 (define (builtin? name) (hash-ref builtin-arity name #f))
+
+;; Shplait's other built-in functions.  The checker does not model them,
+;; and a call to one may appear in checked code: nothing is known about
+;; its result except its type, as for a module function with no return
+;; refinement, and nothing is checked about its arguments (their
+;; preconditions, if any, are checked when the program runs).  The box
+;; operations are not here: their use is restricted (see Box usage
+;; discipline).
+(define unmodelled-builtins
+  '(first list_get foldl foldr member map2
+    values fst snd some none
+    string_get string_to_symbol to_string
+    map_get map_get_k map_set map_update map_remove map_delete map_keys
+    print println
+    boolean_to_syntax integer_to_syntax list_to_alts_syntax list_to_block_syntax
+    list_to_braces_syntax list_to_group_syntax list_to_groups_syntax
+    list_to_parens_syntax list_to_quotes_syntax list_to_syntax replace_scopes
+    string_to_keyword_syntax string_to_operator_syntax string_to_syntax
+    symbol_to_syntax syntax_alts_to_list syntax_block_to_list syntax_braces_to_list
+    syntax_generate_temporary syntax_group_to_list syntax_groups_to_list
+    syntax_is_alts syntax_is_block syntax_is_boolean syntax_is_braces
+    syntax_is_integer syntax_is_keyword syntax_is_list syntax_is_operator
+    syntax_is_parens syntax_is_quotes syntax_is_string syntax_is_symbol
+    syntax_join syntax_keyword_to_string syntax_operator_to_string
+    syntax_parens_to_list syntax_quotes_to_list syntax_read syntax_split
+    syntax_to_boolean syntax_to_integer syntax_to_list syntax_to_string
+    syntax_to_symbol))
 
 ;; Exactly-encodable integer/boolean builtins.
 (define (builtin-exact name args)
@@ -993,6 +1018,16 @@
        ;; ---- calls
        [(and (symbol? head) next-parens)
         (parse-call head (parens-groups next-parens) (cdr rest) env)]
+       ;; ---- array indexing `a[i]`: an element about which nothing
+       ;; is known; `a[i] := v` assigns, and has no value the checker
+       ;; uses.  Calls inside the index and the value are found by the
+       ;; call scan.
+       [(and (symbol? head) (pair? rest) (pair? (car rest)) (eq? (caar rest) 'brackets))
+        (match (cdr rest)
+          [(cons '(op :=) _)
+           (values (t-opaque-typed '(Void) #f) '())]
+          [after
+           (values (flex-term (fresh-value-maker (format "~a_element" head))) after)])]
        ;; ---- identifiers
        [(symbol? head)
         (cond
@@ -1252,9 +1287,13 @@
     ;; the call scan.
     [(eq? head 'assert)
      (values (t-opaque-typed '(Void) #f) rest)]
+    ;; Another built-in: its result is a value of whatever type its use
+    ;; needs, about which nothing more is known.
+    [(memq head unmodelled-builtins)
+     (values (flex-term (fresh-value-maker (format "~a_result" head))) rest)]
     [else
-     (unsup "call to `~a`, which is neither a function defined in this module nor one of the builtins the checker models (~a)"
-            head builtin-names-text)]))
+     (unsup "call to `~a`, which is neither a function defined in this module nor a Shplait built-in, so the checker has no specification for it"
+            head)]))
 
 ;; ======================================================================
 ;; Bodies: branches with path conditions
@@ -1809,6 +1848,7 @@
      => (lambda (m) (format "~a(~a)" (second m) (source-name (third m))))]
     [(regexp-match #px"^(.*)_result$" base) => (lambda (m) (format "~a(...)" (second m)))]
     [(regexp-match #px"^(.*)_content$" base) => (lambda (m) (format "unbox(~a)" (second m)))]
+    [(regexp-match #px"^(.*)_element$" base) => (lambda (m) (format "~a[...]" (second m)))]
     [else base]))
 
 ;; Pretty-print a Z3 model: (define-fun n () Int 1) / (- 1) -> "n = 1",

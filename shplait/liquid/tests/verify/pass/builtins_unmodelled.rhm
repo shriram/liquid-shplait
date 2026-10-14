@@ -1,0 +1,20 @@
+#lang shplait/liquid
+
+// Any Shplait built-in may be called in checked code; the checker knows
+// only the type of its result.  Array indexing and assignment are
+// allowed the same way.
+
+fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: {c :: Char | true}:
+  string_get(s, i)
+fun head_or(l :: Listof(Int), d :: Int) :: {r :: Int | true}:
+  if is_empty(l) | d | first(l)
+fun sum2(a :: Arrayof(Int), {i :: Int | i >= 0 && i + 1 < array_length(a)}) :: {r :: Int | true}:
+  a[i] + a[i + 1]
+fun put(a :: Arrayof(Int), {i :: Int | i >= 0 && i < array_length(a)}) :: {r :: Int | r == 7}:
+  a[i] := 7
+  7
+fun big(l :: Listof(Int)) :: {r :: Int | r >= 0}:
+  max(0, list_get(l, 0))
+check:
+  sum2(Array(1, 2, 3), 1)
+  ~is 5
