@@ -1223,3 +1223,19 @@ check_rejects:
     | def m = 1
       m
   ~throws "`h`, return [branch 2]: the claim `r == 0` is violated when m = 1"
+
+// if_unmodelled_arms
+//
+// The length of an `if` over strings is that of the arm taken.
+check_rejects:
+  fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+    string_get(s, i)
+
+  fun first_char(b :: Boolean, {s :: String | string_length(s) > 0}, t :: String) :: Char:
+    safe_get(if b | s | t, 0)
+  ~throws "violated when b = #false, string_length(s) = 1, string_length(t) = 0"
+
+check_rejects:
+  fun lst(b :: Boolean, l :: Listof(Int)) :: {r :: Int | r > 0}:
+    length(if b | l | cons(1, l))
+  ~throws "`lst`, return: the claim `r > 0` is violated when b = #true, length(l) = 0"

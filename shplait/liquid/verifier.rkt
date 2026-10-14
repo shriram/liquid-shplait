@@ -1117,9 +1117,22 @@
                          (with-guard (negate c) (lambda () (expr->term else-toks env)))))
            (define (ite-at a b)
              (define sort (T-sort a))
-             (unless (and (sort-smt sort) (equal? sort (T-sort b)))
-               (unsup "the two arms of this `if` must have the same modelled type (an integer, a boolean, a symbol, a character, an option, a pair, or a datatype) for the checker to model it"))
-             (T (format "(ite ~a ~a ~a)" c (T-smt a) (T-smt b)) sort (hash) #f))
+             (cond
+               [(and (sort-smt sort) (equal? sort (T-sort b)))
+                (T (format "(ite ~a ~a ~a)" c (T-smt a) (T-smt b)) sort (hash) #f)]
+               ;; arms the checker does not model (strings, lists): a
+               ;; value whose measures are those of the arm taken
+               [(and (eq? sort 'opaque) (eq? (T-sort b) 'opaque))
+                (define ms
+                  (for*/hash ([m (in-list '(length string_length array_length))]
+                              [x (in-value (try-measure a m))]
+                              [y (in-value (try-measure b m))]
+                              #:when (and x y))
+                    (values m (format "(ite ~a ~a ~a)" c x y))))
+                (define ty (or (hash-ref (T-measures a) '%type #f) (hash-ref (T-measures b) '%type #f)))
+                (T #f 'opaque (if ty (hash-set ms '%type ty) ms) (string->symbol (fresh-name "if_value")))]
+               [else
+                (unsup "the two arms of this `if` must have the same modelled type (an integer, a boolean, a symbol, a character, an option, a pair, or a datatype) for the checker to model it")]))
            (values (if (and (flex? a) (flex? b))
                        ;; neither arm returns, or both are of a type only
                        ;; the context determines
