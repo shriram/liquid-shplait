@@ -137,9 +137,9 @@ EOF
    (list "`h`, call to `safe_div`, argument 2: the claim `(a + 1) != 0` is violated when a = -1"
          (program "fun safe_div(n :: Int, {d :: Int | d != 0}) :: Int:" "  n / d"
                   "fun h({a :: Int | a > -2}) :: Int:" "  safe_div(10, a + 1)"))
-   (list "fun `f`: cannot check the return obligation: call to `string_append`, which is neither a function defined in this module nor one of the builtins the checker models (`max`, `min`, ..."
-         (program "fun f(s :: String) :: {n :: Int | n >= 0}:"
-                  "  string_length(string_append(s, s))"))
+   (list "fun `f`: cannot check the return obligation: a function value (an anonymous `fun`) not modeled by the language"
+         (program "fun f(n :: Int) :: {r :: Int | r > n}:"
+                  "  (fun (x :: Int): x + 1)(n)"))
    (list "`midpoint`, assert: the claim `half > 0` is violated when half = 0"
          (program "fun midpoint({lo :: Int | lo >= 0}, {hi :: Int | hi >= lo})"
                   "  :: {m :: Int | m >= lo && m <= hi}:"
