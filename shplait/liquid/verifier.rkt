@@ -739,10 +739,13 @@
 
 (define builtin-arity
   (hash 'max 2 'min 2 'add1 1 'sub1 1 'is_even 1 'is_odd 1
-        'length 1 'string_length 1 'is_empty 1 'is_cons 1 'cons 2))
+        'length 1 'string_length 1 'array_length 1 'is_empty 1 'is_cons 1 'cons 2
+        ;; built-ins whose result's size the checker knows
+        'make_array 2 'string_append 2 'substring 3 'append 2 'reverse 1
+        'map 2 'filter 2 'rest 1))
 
 (define builtin-names-text
-  "`max`, `min`, `add1`, `sub1`, `is_even`, `is_odd`, `length`, `string_length`, `is_empty`, `is_cons`, `cons`, `error`, `unreachable`, `assert`")
+  "`max`, `min`, `add1`, `sub1`, `is_even`, `is_odd`, `length`, `string_length`, `array_length`, `is_empty`, `is_cons`, `cons`, `make_array`, `string_append`, `substring`, `append`, `reverse`, `map`, `filter`, `rest`, `error`, `unreachable`, `assert`")
 
 (define (builtin? name) (hash-ref builtin-arity name #f))
 
@@ -813,7 +816,53 @@
          (define tail-len
            (with-handlers ([unsupported? (lambda (e) #f)]) (measure-of tail 'length)))
          (t-opaque (hash 'length (if tail-len (format "(+ 1 ~a)" tail-len) "1")) #f)]
+        [(array_length) (t-int (measure-of (first arg-terms) 'array_length))]
+        ;; Sizes of results.  A size that would be negative belongs to a
+        ;; call that raises an error instead of returning, so any value
+        ;; is right there; the size is kept non-negative.
+        [(make_array)
+         (sized 'array_length '(Arrayof) (nonneg (int-of (first arg-terms) "`make_array`")))]
+        [(string_append)
+         (sized 'string_length '(String)
+                (sum-of (try-measure (first arg-terms) 'string_length)
+                        (try-measure (second arg-terms) 'string_length)))]
+        [(substring)
+         (sized 'string_length '(String)
+                (nonneg (format "(- ~a ~a)" (int-of (third arg-terms) "`substring`")
+                                (int-of (second arg-terms) "`substring`"))))]
+        [(append)
+         (sized 'length '(Listof)
+                (sum-of (try-measure (first arg-terms) 'length)
+                        (try-measure (second arg-terms) 'length)))]
+        [(reverse map)
+         (sized 'length '(Listof) (try-measure (last arg-terms) 'length))]
+        [(rest)
+         (define len (try-measure (first arg-terms) 'length))
+         (sized 'length '(Listof) (and len (nonneg (format "(- ~a 1)" len))))]
+        [(filter)
+         (define len (try-measure (second arg-terms) 'length))
+         (define const (fresh-name "length_of_filter_result"))
+         (push-extra! (format "(declare-const ~a Int)" const))
+         (push-extra! (format "(assert (>= ~a 0))" const))
+         (when len (push-extra! (format "(assert (<= ~a ~a))" const len)))
+         (sized 'length '(Listof) const)]
         [else (unsup "`~a` is not one of the builtins the checker models" name)])))
+
+;; The measure of a value, or #f when the checker cannot determine it.
+(define (try-measure t mname)
+  (and t (with-handlers ([unsupported? (lambda (e) #f)]) (measure-of t mname))))
+
+(define (sum-of a b) (and a b (format "(+ ~a ~a)" a b)))
+(define (nonneg x) (format "(ite (>= ~a 0) ~a 0)" x x))
+
+;; An unmodelled value of a type whose head is `type-head`, with its
+;; size known (an SMT term) or unknown (#f).
+(define (sized mname type-head size)
+  (define src (string->symbol (fresh-name "builtin_result")))
+  (T #f 'opaque
+     (let ([h (hash '%type type-head)])
+       (if size (hash-set h mname size) h))
+     src))
 
 ;; ======================================================================
 ;; Expression translation
@@ -1020,7 +1069,7 @@
      (when cache (hash-set! cache box-name t))
      t]))
 
-(define predicate-callables '(max min add1 sub1 is_even is_odd length string_length is_empty is_cons))
+(define predicate-callables '(max min add1 sub1 is_even is_odd length string_length array_length is_empty is_cons))
 
 ;; A constructor application.  When every field's argument has an SMT
 ;; term the value is the constructor term itself; otherwise it is a
@@ -1083,7 +1132,7 @@
     (unless (or msr
                 (hash-ref (current-ctor-table) head #f)
                 (and (memq head predicate-callables) (not callee)))
-      (unsup "a refinement predicate may not call `~a`: the only calls allowed in a predicate are the builtins `max`, `min`, `add1`, `sub1`, `is_even`, `is_odd`, the measures `length`, `string_length`, `is_empty`, `is_cons`, and this module's `measure fun`s"
+      (unsup "a refinement predicate may not call `~a`: the only calls allowed in a predicate are the builtins `max`, `min`, `add1`, `sub1`, `is_even`, `is_odd`, the measures `length`, `string_length`, `array_length`, `is_empty`, `is_cons`, and this module's `measure fun`s"
              head)))
   (cond
     [msr
@@ -1171,8 +1220,21 @@
     [(and (eq? head 'cons) (= (length arg-groups) 2))
      (values (builtin-call head (list #f (expr->term (second arg-groups) env))) rest)]
     [(builtin? head)
-     (define arg-terms (for/list ([ts (in-list arg-groups)]) (expr->term ts env)))
+     ;; Arguments the result's size does not depend on are not
+     ;; translated (a function for `map`/`filter`, an element for
+     ;; `make_array`); calls inside them are still found by the call scan.
+     (define skip
+       (case head
+         [(map filter) '(0)]
+         [(make_array) '(1)]
+         [else '()]))
+     (define arg-terms
+       (for/list ([ts (in-list arg-groups)] [k (in-naturals)])
+         (if (memv k skip) #f (expr->term ts env))))
      (values (builtin-call head arg-terms) rest)]
+    ;; `Array(e, ...)`: an array of that many elements.
+    [(eq? head 'Array)
+     (values (sized 'array_length '(Arrayof) (number->string (length arg-groups))) rest)]
     [(hash-ref (current-ctor-table) head #f)
      ;; A datatype value: an algebraic-datatype term.  Its field
      ;; obligations are generated by the call scan, not here.
@@ -1743,10 +1805,10 @@
   (define base (regexp-replace #px"_[0-9]+$" n ""))
   (cond
     [(regexp-match #px"^(.*)_(?:field|local|def|arg)$" base) => (lambda (m) (second m))]
+    [(regexp-match #px"^(length|string_length|array_length)_of_(.*)$" base)
+     => (lambda (m) (format "~a(~a)" (second m) (source-name (third m))))]
     [(regexp-match #px"^(.*)_result$" base) => (lambda (m) (format "~a(...)" (second m)))]
     [(regexp-match #px"^(.*)_content$" base) => (lambda (m) (format "unbox(~a)" (second m)))]
-    [(regexp-match #px"^(length|string_length)_of_(.*)$" base)
-     => (lambda (m) (format "~a(~a)" (second m) (source-name (third m))))]
     [else base]))
 
 ;; Pretty-print a Z3 model: (define-fun n () Int 1) / (- 1) -> "n = 1",

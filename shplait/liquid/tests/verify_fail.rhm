@@ -806,3 +806,40 @@ check_rejects:
       :: { s :: Int | s >= 10 }:
     a + b
   ~throws "is violated"
+
+// array_length_field_violated
+//
+// An array's length comes from `make_array`, so a construction with
+// the wrong size violates the field refinement.
+check_rejects:
+  type Matrix
+  | matrix(rows :: {r :: Int | r >= 0},
+           cols :: {c :: Int | c >= 0},
+           cells :: {a :: Arrayof(Int) | array_length(a) == rows * cols})
+  fun make({r :: Int | r >= 0}, {c :: Int | c >= 0}) :: Matrix:
+    matrix(r, c, make_array(r * c + 1, 0))
+  ~throws "`make`, matrix, field `cells`: the claim `array_length(a) == rows * cols` is violated when c = 0, r = 0"
+
+// filter_length_unknown
+//
+// `filter` may drop elements: only `length(filter(...)) <= length(l)`
+// is known.
+check_rejects:
+  fun k(l :: Listof(Int)) :: {n :: Int | n == length(l)}:
+    length(filter(fun (x): x > 0, l))
+  ~throws "the claim `n == length(l)` is violated when length(filter(...)) = 0, length(l) = 1"
+
+// string_append_index_past_first
+//
+// An index valid for the concatenation need not be valid for its first
+// part.
+check_rejects:
+  fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+    string_get(s, i)
+  fun first_part(s :: String, t :: String,
+                 {i :: Int | i >= 0 && i < string_length(s) + string_length(t)}) :: Char:
+    safe_get(string_append(s, t), i)
+  fun wrong_part(s :: String, t :: String,
+                 {i :: Int | i >= 0 && i < string_length(s) + string_length(t)}) :: Char:
+    safe_get(s, i)
+  ~throws "`wrong_part`, call to `safe_get`, argument 2: the claim `i >= 0 && i < string_length(s)` is violated when i = 0, string_length(s) = 0"

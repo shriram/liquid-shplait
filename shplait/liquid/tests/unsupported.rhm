@@ -66,23 +66,26 @@ check_rejects:
   fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
     string_get(s, i)
 
-  fun g2(a :: String, b :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
-    def u = string_append(a, b)
+  fun g3(a :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
+    fun twice(x :: String) :: String: string_append(x, x)
+    def u = twice(a)
     safe_get(u, i)
-  ~throws "this refinement depends on argument 1 (`u`), which the checker cannot analyze: local definition `u` cannot be checked: call to `string_append`"
+  ~throws "this refinement depends on argument 1 (`u`), which the checker cannot analyze: local definition `u` cannot be checked: `twice` is a function defined inside another definition"
 
 // dependent_arg_unmodelled
 //
 // `safe_get`'s refinement on `i` mentions `s`, whose actual here is a
-// call the checker does not model.  This fails closed, with a message
+// call the checker does not follow (to a function defined inside
+// another).  This fails closed, with a message
 // naming the argument and the reason.
 check_rejects:
   fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
     string_get(s, i)
 
-  fun g2(a :: String, b :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
-    safe_get(string_append(a, b), i)
-  ~throws "this refinement depends on argument 1 (`string_append(a, b)`), which the checker cannot analyze: call to `string_append`"
+  fun g2(a :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
+    fun twice(x :: String) :: String: string_append(x, x)
+    safe_get(twice(a), i)
+  ~throws "this refinement depends on argument 1 (`twice(a)`), which the checker cannot analyze: `twice` is a function defined inside another definition"
 
 // error_in_predicate
 //
