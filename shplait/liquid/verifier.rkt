@@ -1092,7 +1092,7 @@
         (values (expr->term (block-result-toks blk) (bind-let x rhs env)) '())]
        ;; ---- an anonymous function as a value
        [(and (eq? head 'fun) next-parens)
-        (unsup "a function value (an anonymous `fun`) is not something the checker models, so a claim cannot depend on one")]
+        (unsup "a function value (an anonymous `fun`) not modeled by the language")]
        ;; ---- calls
        [(and (symbol? head) next-parens)
         (parse-call head (parens-groups next-parens) (cdr rest) env)]
