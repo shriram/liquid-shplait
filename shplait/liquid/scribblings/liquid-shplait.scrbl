@@ -224,7 +224,7 @@ This is partial correctness: if a function does not terminate, we do not know
 anything about the result. Thus, every guarantee from Liquid Shplait comes with
 an implicit expectation that the function terminates.
 
-Division and @rhombus(mod) are modelled exactly as Shplait computes
+Division and @rhombus(mod) are modeled exactly as Shplait computes
 them: @rhombus(/) truncates, and @rhombus(mod) takes the sign of the
 divisor. That is why @rhombus(n / 2) fails for @rhombus(double) above:
 when @rhombus(n) is @rhombus(1), the result is @rhombus(0).
@@ -253,8 +253,8 @@ in their generality [@secref("limitations")]. When it cannot analyze a
 construct, it reprts a compile-time error:
 
 @verbatim(~indent: 2){
-fun `f`: cannot check the return obligation: a function value (an
-anonymous `fun`) not modeled by the language
+`f`, return: cannot check: a function value (an anonymous `fun`) not
+modeled by the language
 }
 
 @// ------------------------------------------------------------
@@ -337,7 +337,7 @@ is unknown.
 
 A pair's
 components are taken apart in a body with @rhombus(def values(x, y) = p).
-Tuples of other sizes are not modelled.
+Tuples of other sizes are not modeled.
 
 A character literal is written @rhombus(Char"a"); characters may be
 compared with @rhombus(==) and @rhombus(!=).
@@ -398,7 +398,7 @@ means they must provide a value even when no meaningful one exists: e.g., the
 either make this value meaningless, or guard against it ever being used (e.g.,
 only caring about the value of @rhombus(ohd) in the @rhombus(ocons) case).
 
-Lists, strings, and arrays are not modelled themselves, but a predicate may
+Lists, strings, and arrays are not modeled themselves, but a predicate may
 refer to them through the measures @rhombus(length),
 @rhombus(string_length), @rhombus(array_length), @rhombus(is_empty), and
 @rhombus(is_cons).
@@ -412,7 +412,7 @@ A body is a sequence of (zero or more) local @rhombus(def)s followed by one
 result expression, and it may contain:
 
 @itemlist(
-  @item{integer, boolean, symbol, and character literals, and identifiers;}
+  @item{integer, Boolean, symbol, and character literals, and identifiers;}
   @item{@rhombus(+), @rhombus(-), @rhombus(*), @rhombus(/), @rhombus(mod),
     comparisons, @rhombus(&&), @rhombus(||), and @rhombus(!);}
   @item{@rhombus(if), @rhombus(cond), @rhombus(match), and @rhombus(let);}
