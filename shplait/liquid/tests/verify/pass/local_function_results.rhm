@@ -1,0 +1,26 @@
+#lang shplait/liquid
+
+// A call to a function defined inside another, or to a function passed
+// as an argument, gives a value of its result type; a claim that holds
+// for every such value is proved.
+
+fun f(n :: Int) :: {r :: Int | r >= 0}:
+  fun sq(x :: Int) :: Int: x * x
+  max(0, sq(n))
+
+fun clamp_apply(k :: Int -> Int, n :: Int) :: {r :: Int | r >= 0 && r <= 10}:
+  min(10, max(0, k(n)))
+
+fun call_safe({d :: Int | d != 0}) :: Int:
+  10 / d
+
+fun use_both(n :: Int) :: Int:
+  fun inc(x :: Int) :: Int: x + 1
+  call_safe(max(1, inc(n)))
+
+check:
+  f(3)
+  ~is 9
+check:
+  clamp_apply(fun (x): x * 3, 2)
+  ~is 6

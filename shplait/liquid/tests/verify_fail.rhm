@@ -875,3 +875,31 @@ check_rejects:
   fun pos(s :: String) :: {r :: Int | r > 0}:
     string_length(to_string(string_get(s, 0)))
   ~throws "violated when string_length(to_string(...)) = 0"
+
+// local_function_result_unknown
+//
+// A call to a function defined inside another gives a value of its
+// result type about which nothing else is known: the checker does not
+// look inside `g`.
+check_rejects:
+  fun f(n :: Int) :: {r :: Int | r > 0}:
+    fun g(y :: Int) :: Int:
+      y * y + 1
+    g(n)
+  ~throws "violated when g(...) = 0"
+
+// function_parameter_result_unknown
+//
+// Likewise a call to a function passed as an argument.
+check_rejects:
+  fun apply(k :: Int -> Int, n :: Int) :: {r :: Int | r > 0}:
+    k(n)
+  ~throws "violated when k(...) = 0"
+
+// function_parameter_in_predicate
+//
+// A predicate may not call a function passed as an argument.
+check_rejects:
+  fun p(k :: Int -> Int, {n :: Int | n > k(0)}) :: Int:
+    n
+  ~throws "a refinement predicate may not call `k`"

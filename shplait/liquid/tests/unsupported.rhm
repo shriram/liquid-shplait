@@ -33,17 +33,6 @@ check_rejects:
   def g = fun (y :: Int) :: {r :: Int | r > 0}: y * y + 1
   ~throws "refinements on an anonymous `fun` are not checked"
 
-// call_through_local_function
-//
-// A claim that depends on the result of a function defined inside
-// the function: the checker does not follow calls to it.
-check_rejects:
-  fun f(n :: Int) :: {r :: Int | r > 0}:
-    fun g(y :: Int) :: Int:
-      y * y + 1
-    g(n)
-  ~throws "`g` is a function defined inside another definition"
-
 // constructor_as_value
 //
 // A constructor with a refined field must be applied directly.
@@ -67,25 +56,23 @@ check_rejects:
     string_get(s, i)
 
   fun g3(a :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
-    fun twice(x :: String) :: String: string_append(x, x)
-    def u = twice(a)
+    def u = (fun (x :: String): x)(a)
     safe_get(u, i)
-  ~throws "this refinement depends on argument 1 (`u`), which the checker cannot analyze: local definition `u` cannot be checked: `twice` is a function defined inside another definition"
+  ~throws "this refinement depends on argument 1 (`u`), which the checker cannot analyze: local definition `u` cannot be checked: a function value (an anonymous `fun`)"
 
 // dependent_arg_unmodelled
 //
 // `safe_get`'s refinement on `i` mentions `s`, whose actual here is a
-// call the checker does not follow (to a function defined inside
-// another).  This fails closed, with a message
+// call the checker does not follow (to an anonymous function).  This
+// fails closed, with a message
 // naming the argument and the reason.
 check_rejects:
   fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
     string_get(s, i)
 
   fun g2(a :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
-    fun twice(x :: String) :: String: string_append(x, x)
-    safe_get(twice(a), i)
-  ~throws "this refinement depends on argument 1 (`twice(a)`), which the checker cannot analyze: `twice` is a function defined inside another definition"
+    safe_get((fun (x :: String): x)(a), i)
+  ~throws "which the checker cannot analyze: a function value (an anonymous `fun`)"
 
 // error_in_predicate
 //
@@ -183,10 +170,9 @@ check_rejects:
     k
 
   fun f(n :: Int) :: Int:
-    fun show(m :: Int) :: String: to_string(m)
-    let s = show(n):
+    let s = (fun (m :: Int): to_string(m))(n):
       pos(string_length(s))
-  ~throws "`let`-bound `s` cannot be checked: `show` is a function defined inside another definition"
+  ~throws "`let`-bound `s` cannot be checked: a function value (an anonymous `fun`)"
 
 // listof_element
 //
@@ -374,13 +360,12 @@ check_rejects:
 // unknown_callee
 //
 // A call the checker has no specification for, in a position that
-// carries a claim, is an error naming the callee.  A function defined
-// inside another has none.
+// carries a claim, is an error naming the callee.  An anonymous
+// function applied directly has none.
 check_rejects:
   fun pick({xs :: Listof(Int) | true}) :: { y :: Int | y > 0 }:
-    fun helper(l :: Listof(Int)) :: Int: 1
-    helper(xs)
-  ~throws "`helper` is a function defined inside another definition"
+    (fun (l :: Listof(Int)): 1)(xs)
+  ~throws "a function value (an anonymous `fun`)"
 
 // measure_wrong_kind_field
 //

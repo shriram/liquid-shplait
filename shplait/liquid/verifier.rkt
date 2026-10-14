@@ -1154,22 +1154,26 @@
   ;; A name bound locally (a parameter, a `let`, a function defined
   ;; inside this one) is not the top-level function it may share its
   ;; name with: lexically it is the local binding, a function value the
-  ;; checker does not follow.
-  (when (hash-ref env head #f)
-    (unsup "~a" (local-function-message head)))
-  (define callee (hash-ref (current-sig-table) head #f))
-  (define msr (hash-ref (current-measure-table) head #f))
+  ;; checker does not follow.  In a body its result is a value of its
+  ;; type about which nothing else is known, as for an unmodelled
+  ;; builtin; a predicate may not call it.
+  (define local? (and (hash-ref env head #f) #t))
+  (define callee (and (not local?) (hash-ref (current-sig-table) head #f)))
+  (define msr (and (not local?) (hash-ref (current-measure-table) head #f)))
   ;; Inside a predicate only the modelled builtins and this module's
   ;; measures may be called; a module function of the same name as a
   ;; builtin shadows it, so it is refused too rather than silently
   ;; read as the builtin.
   (unless (current-allow-calls)
-    (unless (or msr
-                (hash-ref (current-ctor-table) head #f)
-                (and (memq head predicate-callables) (not callee)))
+    (unless (and (not local?)
+                 (or msr
+                     (hash-ref (current-ctor-table) head #f)
+                     (and (memq head predicate-callables) (not callee))))
       (unsup "a refinement predicate may not call `~a`: the only calls allowed in a predicate are the builtins `max`, `min`, `add1`, `sub1`, `is_even`, `is_odd`, the measures `length`, `string_length`, `array_length`, `is_empty`, `is_cons`, and this module's `measure fun`s"
              head)))
   (cond
+    [local?
+     (values (flex-term (fresh-value-maker (format "~a_result" head))) rest)]
     [msr
      (unless (= (length arg-groups) (length (measure-params msr)))
        (unsup "measure `~a` takes ~a argument(s), got ~a" head (length (measure-params msr)) (length arg-groups)))
