@@ -400,3 +400,18 @@ check_rejects:
   fun f({n :: Int | is_some(n)}) :: Int:
     0
   ~throws "`is_some` needs an option but got an integer"
+
+// nested_def_shadows
+//
+// A local `def` in a nested block may not shadow a parameter either:
+// the call after it would otherwise be checked against the parameter.
+check_rejects:
+  fun safe_div(n :: Int, {d :: Int | d != 0}) :: Int:
+    n / d
+
+  fun s({n :: Int | n > 0}) :: Int:
+    if n > 0
+    | def n = 0
+      safe_div(10, n)
+    | 0
+  ~throws "local `def n` shadows a parameter or an earlier local definition; rename it"

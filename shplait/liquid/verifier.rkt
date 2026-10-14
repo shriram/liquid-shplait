@@ -468,6 +468,9 @@
 ;; checker cannot translate: using it reports why.
 (struct failed-local (why) #:transparent)
 
+;; Likewise a `def` inside a nested block.
+(struct failed-def (why) #:transparent)
+
 ;; `let x = rhs: ...`: the environment for the body.  `x` stands for a
 ;; constant equal to `rhs`, named after `x` for counterexamples.  The
 ;; constant goes where the rhs's own lines go (the current extras), so
@@ -1124,6 +1127,9 @@
                        (ite-at a b))
                    after)]
           [_ (unsup "`if` without exactly two `|` alternatives")])]
+       ;; ---- `block:` as an expression, without statements
+       [(and (eq? head 'block) (pair? rest) (pair? (car rest)) (eq? (caar rest) 'block))
+        (values (expr->term (block-result-toks (car rest)) env) (cdr rest))]
        ;; ---- `let x = rhs: body` as an expression; its block ends the
        ;; token list
        [(and (eq? head 'let) (let-values ([(x r b) (split-let toks)]) x))
@@ -1154,6 +1160,8 @@
                   (unsup "~a" (local-function-message head)))
                 (when (failed-local? v)
                   (unsup "`let`-bound `~a` cannot be checked: ~a" head (failed-local-why v)))
+                (when (failed-def? v)
+                  (unsup "local definition `~a` cannot be checked: ~a" head (failed-def-why v)))
                 (when (untranslated? v)
                   (unsup "this refinement depends on ~a (`~a`), which the checker cannot analyze: ~a"
                          (let ([pos (untranslated-position v)])
@@ -1390,6 +1398,9 @@
   ;; checker does not follow.  In a body its result is a value of its
   ;; type about which nothing else is known, as for an unmodelled
   ;; builtin; a predicate may not call it.
+  (let ([v (hash-ref env head #f)])
+    (when (failed-def? v)
+      (unsup "local definition `~a` cannot be checked: ~a" head (failed-def-why v))))
   (define local? (or (and (hash-ref env head #f) #t)
                      (hash-has-key? (current-failed-locals) head)))
   (define callee (and (not local?) (hash-ref (current-sig-table) head #f)))
@@ -1558,15 +1569,13 @@
      (define-values (cond-toks alts-tail) (split-at-alts rest))
      (match alts-tail
        [(list (list 'alts then-blk else-blk))
-        (define then-toks (block-result-toks then-blk))
-        (define else-toks (block-result-toks else-blk))
         (define-values (cond-smt returns)
           (with-divergence
            (lambda () (bool-of (expr->term cond-toks env) "an `if` condition"))))
         (append
-         (for/list ([b (in-list (at-path cond-smt (lambda () (body->branches then-toks env))))])
+         (for/list ([b (in-list (at-path cond-smt (lambda () (block->branches then-blk env))))])
            (list (conj returns (conj cond-smt (first b))) (second b)))
-         (for/list ([b (in-list (at-path (negate cond-smt) (lambda () (body->branches else-toks env))))])
+         (for/list ([b (in-list (at-path (negate cond-smt) (lambda () (block->branches else-blk env))))])
            (list (conj returns (conj (negate cond-smt) (first b))) (second b))))]
        [_ (unsup "`if` without exactly two `|` alternatives")])]
     [(list 'cond (list 'alts clauses ...))
@@ -1579,15 +1588,101 @@
      #:when (let-values ([(x r b) (split-let toks)]) x)
      (define-values (x rhs blk) (split-let toks))
      (define-values (env* returns) (with-divergence (lambda () (bind-let x rhs env))))
-     (for/list ([b (in-list (body->branches (block-result-toks blk) env*))])
+     (for/list ([b (in-list (at-path returns (lambda () (block->branches blk env*))))])
        (list (conj returns (first b)) (second b)))]
+    ;; `block: ...`
+    [(list 'block (cons 'block gs))
+     (block->branches (cons 'block gs) env)]
     [(cons (? symbol? kw) _)
-     #:when (memq kw '(letrec let_cc begin block try time trace))
+     #:when (memq kw '(letrec let_cc begin try time trace))
      (unsup "`~a` is not supported inside a checked function body; use a local `def` or a `let` for a binding, or move the code into its own `fun`"
             kw)]
     [_
      (define-values (t returns) (with-divergence (lambda () (expr->term toks env))))
      (list (list returns t))]))
+
+;; A nested block (an `if` arm, a `cond` or `match` clause, a `let`
+;; body, `block:`): its statements, then the branches of its result.
+;; What the statements establish (a `def`'s value, an `assert`'s
+;; predicate, that a `def`'s right-hand side returns) holds on this
+;; path only, so it becomes part of the path condition.
+(define (block->branches blk env)
+  (define gs (block-groups blk))
+  (when (null? gs) (unsup "empty block"))
+  (define-values (env* path) (nested-statements (drop-right gs 1) env))
+  (for/list ([b (in-list (at-path path (lambda () (body->branches (last gs) env*))))])
+    (list (conj path (first b)) (second b))))
+
+;; -> (values env path), the environment after `stmts` and what holds
+;; once they have run.
+(define (nested-statements stmts env)
+  (for/fold ([env env] [path "true"]) ([st (in-list stmts)])
+    (at-path path (lambda () (nested-statement st env path)))))
+
+;; Errors the call scan finds in nested statements (a `def` that shadows
+;; a binding), for the function's report.
+(define current-scan-errors (make-parameter #f))
+(define (note-scan-error! why)
+  (define b (current-scan-errors))
+  (when b (set-box! b (cons why (unbox b)))))
+
+(define (nested-statement st env path)
+  (define (builtin-named? name) (not (hash-ref (current-sig-table) name #f)))
+  ;; a `def` may not shadow: its name then stands for the reason
+  (define (shadow-why x)
+    (and (or (hash-ref env x #f) (hash-ref (current-box-params) x #f))
+         (format "local `def ~a` shadows a parameter or an earlier local definition; rename it" x)))
+  ;; the term of a `def`'s right-hand side and what must hold for it to
+  ;; return, or #f and why it cannot be translated
+  (define (rhs-term rhs)
+    (with-handlers ([unsupported? (lambda (e) (values #f (unsupported-why e)))])
+      (with-divergence (lambda () (expr->term rhs env)))))
+  ;; a statement form the checker does not support is reported once, by
+  ;; the call scan; what follows it is still checked
+  (define-values (kind name rhs)
+    (with-handlers ([unsupported? (lambda (e)
+                                    (note-scan-error! (unsupported-why e))
+                                    (values 'unsupported #f #f))])
+      (classify-statement st)))
+  (case kind
+    [(unsupported) (values env path)]
+    [(def)
+     (define-values (t returns) (rhs-term rhs))
+     (cond
+       [(shadow-why name)
+        => (lambda (why) (note-scan-error! why) (values (hash-set env name (failed-def why)) path))]
+       [t (values (bind-local env name t) (conj path returns))]
+       [else (values (hash-set env name (failed-def returns)) path)])]
+    [(defvalues)
+     (define-values (t returns) (rhs-term rhs))
+     (cond
+       [(ormap shadow-why name)
+        => (lambda (why)
+             (note-scan-error! why)
+             (values (for/fold ([e env]) ([x (in-list name)]) (hash-set e x (failed-def why))) path))]
+       [(not t) (values (for/fold ([e env]) ([x (in-list name)]) (hash-set e x (failed-def returns))) path)]
+       [(and (= (length name) 2) (not (flex? t)) (pair-sort? (T-sort t)))
+        (values (for/fold ([e env]) ([x (in-list name)] [which '(fst snd)])
+                  (bind-local e x (pair-select which t (format "~a_local" x))))
+                (conj path returns))]
+       [else
+        (values (for/fold ([e env]) ([x (in-list name)])
+                  (hash-set e x (flex-term (fresh-value-maker (format "~a_local" x)))))
+                (conj path returns))])]
+    [else
+     (match st
+       [(app fun-def-parts (list (? symbol? n) _ _))
+        (values (hash-set env n (local-function)) path)]
+       [(list (? symbol? head) (cons 'parens _))
+        #:when (and (memq head '(error unreachable)) (builtin-named? head))
+        (values env "false")]
+       [(list 'assert (list 'parens (cons 'group p-toks)))
+        #:when (builtin-named? 'assert)
+        ;; the assert's own obligation checks it
+        (define p (with-handlers ([unsupported? (lambda (e) #f)])
+                    (bool-of (expr->term p-toks env) "`assert`")))
+        (values env (if p (conj path p) path))]
+       [_ (values env path)])]))
 
 ;; A block's groups, and the group that is its value (the last one).
 ;; Earlier groups are statements: their calls are scanned for
@@ -1601,7 +1696,7 @@
   (when (null? gs) (unsup "empty block"))
   (for ([g (in-list (reverse (cdr (reverse gs))))])
     (when (match g [(cons 'def _) #t] [_ #f])
-      (unsup "a local `def` inside a `match` clause, an `if` arm or a `let` body is not supported; move it to the top of the function body, use a `let`, or move the code into its own `fun`")))
+      (unsup "a local `def` inside a block within an expression is not supported")))
   (last gs))
 (define (block-groups/safe blk)
   (with-handlers ([unsupported? (lambda (e) '())]) (block-groups blk)))
@@ -1632,15 +1727,13 @@
       [else
        (match (car clauses)
          [`(block (group #:else ,else-blk))
-          (define body-toks (block-result-toks else-blk))
           (loop (cdr clauses) neg-prev
                 (append (reverse
-                         (for/list ([b (in-list (at-path neg-prev (lambda () (body->branches body-toks env))))])
+                         (for/list ([b (in-list (at-path neg-prev (lambda () (block->branches else-blk env))))])
                            (list (conj neg-prev (first b)) (second b))))
                         acc))]
          [`(block (group . ,clause-toks))
           (define-values (guard-toks body-block) (split-at-trailing-block clause-toks))
-          (define body-toks (block-result-toks body-block))
           ;; a guard that never returns cuts off this clause and the
           ;; ones after it
           (define-values (guard-smt returns)
@@ -1652,7 +1745,7 @@
           (loop (cdr clauses)
                 (conj neg-prev (conj returns (negate guard-smt)))
                 (append (reverse
-                         (for/list ([b (in-list (at-path path (lambda () (body->branches body-toks env))))])
+                         (for/list ([b (in-list (at-path path (lambda () (block->branches body-block env))))])
                            (list (conj path (first b)) (second b))))
                         acc))]
          [_ (unsup "unrecognized `cond` clause shape")])])))
@@ -1692,10 +1785,9 @@
      (match cl
        [`(block (group . ,clause-toks))
         (define-values (pat-toks body-block) (split-at-trailing-block clause-toks))
-        (define body-toks (block-result-toks body-block))
         (define-values (env* pc) (at-path returns (lambda () (bind-pattern pat-toks env scrut))))
         (for/list ([b (in-list (at-path (conj returns (or pc "true"))
-                                        (lambda () (body->branches body-toks env*))))])
+                                        (lambda () (block->branches body-block env*))))])
           (list (conj returns (if pc (conj pc (first b)) (first b))) (second b)))]
        [_ (unsup "unrecognized `match` clause shape")]))))
 
@@ -1881,8 +1973,7 @@
         #:when (fun-def-parts stx)
         (match-define (list name params blk) (fun-def-parts stx))
         (define env* (bind-local-params name params env))
-        (append-map (lambda (ts) (find-calls-rec ts path-conds env*))
-                    (block-groups/safe blk))]
+        (scan-groups (block-groups/safe blk) path-conds env*)]
        ;; `let x = rhs: body`: calls in the body see `x` (bound to the
        ;; reason, if it cannot be, so an argument that needs it says why)
        [(list-rest 'let (? symbol?) '(op =) _)
@@ -1893,15 +1984,14 @@
                            (lambda (e) (hash-set env x (failed-local (unsupported-why e))))])
             (bind-let x rhs env)))
         (append (find-calls-rec rhs path-conds env)
-                (append-map (lambda (ts) (find-calls-rec ts path-conds env*))
-                            (block-groups/safe blk)))]
+                (scan-groups (block-groups/safe blk) path-conds env*))]
        [(cons 'if rest)
         (define-values (cond-toks alts-tail) (split-at-alts rest))
         (match alts-tail
           [(list (list 'alts then-blk else-blk))
            (define g (try-guard-smt cond-toks env))
            (define (scan blk pcs)
-             (append-map (lambda (ts) (find-calls-rec ts pcs env)) (block-groups/safe blk)))
+             (scan-groups (block-groups/safe blk) pcs env))
            (append
             (find-calls-rec cond-toks path-conds env)
             (scan then-blk (if g (cons g path-conds) path-conds))
@@ -1916,8 +2006,7 @@
                [`(block (group #:else ,else-blk))
                 (loop (cdr cs) pcs
                       (append acc
-                              (append-map (lambda (ts) (find-calls-rec ts pcs env))
-                                          (block-groups/safe else-blk))))]
+                              (scan-groups (block-groups/safe else-blk) pcs env)))]
                [`(block (group . ,clause-toks))
                 (define parts
                   (with-handlers ([unsupported? (lambda (e) #f)])
@@ -1930,9 +2019,8 @@
                          (if g (cons (format "(not ~a)" g) pcs) pcs)
                          (append acc
                                  (find-calls-rec (first parts) pcs env)
-                                 (append-map (lambda (ts)
-                                               (find-calls-rec ts (if g (cons g pcs) pcs) env))
-                                             (block-groups/safe (second parts)))))])]
+                                 (scan-groups (block-groups/safe (second parts))
+                                              (if g (cons g pcs) pcs) env)))])]
                [_ (loop (cdr cs) pcs (append acc (find-calls-children (car cs) pcs env)))])]))]
        [(cons 'match rest)
         (define-values (scrut-toks alts-tail) (split-at-alts rest))
@@ -1955,11 +2043,12 @@
                      (define-values (env* pc)
                        (with-handlers ([unsupported? (lambda (e) (values env #f))])
                          (bind-pattern (first parts) env scrut)))
-                     (append-map (lambda (ts)
-                                   (find-calls-rec ts (if pc (cons pc path-conds) path-conds) env*))
-                                 (block-groups/safe (second parts)))])]
+                     (scan-groups (block-groups/safe (second parts))
+                                  (if pc (cons pc path-conds) path-conds) env*)])]
                  [_ '()]))))]
           [_ (find-calls-children stx path-conds env)])]
+       [(list 'block (cons 'block gs))
+        (scan-groups (block-groups/safe (cons 'block gs)) path-conds env)]
        [(list-rest (? symbol? name)
                    (list 'parens groups ...)
                    rest)
@@ -1970,6 +2059,25 @@
                 (append-map (lambda (a) (find-calls-rec a path-conds env)) actuals)
                 (find-calls-rec rest path-conds env))]
        [_ (find-calls-children stx path-conds env)])]))
+
+;; The calls in a block's groups.  A statement's definitions are in
+;; scope in the groups after it, and what it establishes (an `assert`,
+;; or that an `error` statement does not return) is a path condition
+;; for them.
+(define (scan-groups gs path-conds env)
+  (let loop ([gs gs] [pcs path-conds] [env env] [acc '()])
+    (cond
+      [(null? gs) acc]
+      [else
+       (define calls (find-calls-rec (car gs) pcs env))
+       (define-values (env* pcs*)
+         (if (null? (cdr gs))
+             (values env pcs)
+             (parameterize ([current-path (conj (scan-base) (conj* pcs))])
+               (with-handlers ([unsupported? (lambda (e) (values env pcs))])
+                 (define-values (env* path) (nested-statement (car gs) env "true"))
+                 (values env* (if (equal? path "true") pcs (cons path pcs)))))))
+       (loop (cdr gs) pcs* env* (append acc calls))])))
 
 (define (find-calls-children stx path-conds env)
   (append
@@ -2565,7 +2673,7 @@
        (unsup "local `def ~a` without a `=` right-hand side" name))
      (values 'def name (list-tail rest (add1 eq-pos)))]
     [(cons (? symbol? kw) _)
-     #:when (memq kw '(letrec let_cc begin block try time trace macro module type import))
+     #:when (memq kw '(letrec let_cc begin try time trace macro module type import))
      (unsup "`~a` is not supported inside a checked function body; use a local `def` or a `let` for a binding, or move the code into its own `fun`"
             kw)]
     [_ (values 'expr #f toks)]))
@@ -2758,10 +2866,19 @@
 
 ;; Call-site and set_box obligations discovered in one statement.
 (define (emit-call-obligations! f toks outer-env add-obl! add-err! prefix)
-  (for ([c (in-list (find-calls toks outer-env))])
+  (define scan-errors (box '()))
+  (define calls (parameterize ([current-scan-errors scan-errors]) (find-calls toks outer-env)))
+  (define reported (remove-duplicates (reverse (unbox scan-errors))))
+  (for ([why (in-list reported)])
+    (add-err! "a local definition" why))
+  ;; a use of such a definition would only repeat the message
+  (define (add-err*! label why)
+    (unless (for/or ([r (in-list reported)]) (string-suffix? why r))
+      (add-err! label why)))
+  (for ([c (in-list calls)])
     (match-define (list callee-name actuals path-conds env) c)
     (parameterize ([current-path (conj (current-path) (conj* path-conds))])
-      (emit-call-obligation! f callee-name actuals path-conds env add-obl! add-err!))))
+      (emit-call-obligation! f callee-name actuals path-conds env add-obl! add-err*!))))
 
 (define (emit-call-obligation! f callee-name actuals path-conds env add-obl! add-err!)
   (cond

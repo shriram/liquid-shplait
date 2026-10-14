@@ -1166,3 +1166,60 @@ check_rejects:
     | good(): 7
     | bad(x): 5
   ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when t = good()"
+
+// nested_def_counterexample
+//
+// A local `def` inside an `if` arm is checked, and named in the
+// counterexample.
+check_rejects:
+  fun c(n :: Int) :: {r :: Int | r > n}:
+    if n > 0
+    | def m = n
+      m
+    | n + 1
+  ~throws "`c`, return [branch 1]: the claim `r > n` is violated when m = 1, n = 1"
+
+// nested_block_counterexample
+check_rejects:
+  fun b(n :: Int) :: {r :: Int | r > n}:
+    if n > 0
+    | block:
+        def m = n - 1
+        m
+    | n + 1
+  ~throws "`b`, return [branch 1]: the claim `r > n` is violated when m = 0, n = 1"
+
+// nested_def_in_call
+check_rejects:
+  fun safe_div(n :: Int, {d :: Int | d != 0}) :: Int:
+    n / d
+
+  fun e(n :: Int) :: Int:
+    if n > -1
+    | def k = n
+      safe_div(10, k)
+    | 0
+  ~throws "`e`, call to `safe_div`, argument 2: the claim `k != 0` is violated when k = 0, n = 0"
+
+// nested_assert
+check_rejects:
+  fun f(n :: Int) :: Int:
+    cond
+    | n > 5:
+        def m = n - 6
+        assert(m > 0)
+        m
+    | ~else: 0
+  ~throws "`f`, assert: the claim `m > 0` is violated when m = 0, n = 6"
+
+// nested_defs_per_branch
+//
+// Each branch has its own `m`.
+check_rejects:
+  fun h(n :: Int) :: {r :: Int | r == 0}:
+    if n > 0
+    | def m = n
+      0
+    | def m = 1
+      m
+  ~throws "`h`, return [branch 2]: the claim `r == 0` is violated when m = 1"
