@@ -173,7 +173,7 @@ check_rejects:
 
 // cons_head_call_checked
 //
-// Companion to verify/pass/cons_unmodelled_head.rhm: the head of a
+// Companion to verify/pass/cons_unmodeled_head.rhm: the head of a
 // `cons` is not translated, but a call inside it is still checked.
 check_rejects:
   fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
@@ -870,7 +870,7 @@ check_rejects:
 
 // nested_builtin_unconstrained
 //
-// Measures apply to unmodelled built-ins' results, but are unknown.
+// Measures apply to unmodeled built-ins' results, but are unknown.
 check_rejects:
   fun pos(s :: String) :: {r :: Int | r > 0}:
     string_length(to_string(string_get(s, 0)))
@@ -902,11 +902,11 @@ check_rejects:
 check_rejects:
   fun p(k :: Int -> Int, {n :: Int | n > k(0)}) :: Int:
     n
-  ~throws "a refinement predicate may not call `k`"
+  ~throws "a predicate may not call `k`"
 
 // option_claim_wrong_branch
 //
-// Options are modelled: the claim fails on each branch, and the
+// Options are modeled: the claim fails on each branch, and the
 // counterexample names the values.
 check_rejects:
   fun try_div(n :: Int, d :: Int) :: {o :: Optionof(Int) | is_none(o) == (d == 0)}:
@@ -1224,7 +1224,7 @@ check_rejects:
       m
   ~throws "`h`, return [branch 2]: the claim `r == 0` is violated when m = 1"
 
-// if_unmodelled_arms
+// if_unmodeled_arms
 //
 // The length of an `if` over strings is that of the arm taken.
 check_rejects:

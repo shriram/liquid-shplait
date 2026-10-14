@@ -51,7 +51,7 @@
 ;; sort is fixed by its use (a FLEXIBLE term, as for `error(...)`).
 ;;
 ;; Expression sub-language for predicates and checked bodies:
-;;   integer and boolean literals; identifiers (parameters, local
+;;   integer and Boolean literals; identifiers (parameters, local
 ;;   `def` bindings, `match` pattern variables); prefix `-` and `!`;
 ;;   + - * / and infix `mod` (`/` is shplait's TRUNCATING division and
 ;;   `mod` is shplait's sign-of-divisor modulo, both encoded
@@ -219,12 +219,13 @@
            [(list x pt)
             (define srt (base-sort (base->toks (stx-datum pt))))
             (unless (and (sort-smt srt) (not (sort-has-tvar? srt)))
-              (unsup "a measure's parameter `~a` has type ~a, which the checker does not model"
+              (unsup "a measure's parameter `~a` cannot have type ~a (see Measure Functions in the guide)"
                      (id-sym x) (base-name (base->toks (stx-datum pt)))))
             (cons (id-sym x) srt)])))
      (define rsort (base-sort (base->toks (stx-datum rt))))
      (unless (and (sort-smt rsort) (not (sort-has-tvar? rsort)))
-       (unsup "a measure must return `Int`, `Boolean`, `Symbol`, `Char`, an `Optionof` or a pair of these, or a datatype declared in this module"))
+       (unsup "a measure cannot return a value of type ~a (see Measure Functions in the guide)"
+              (base-name (base->toks (stx-datum rt)))))
      (define groups (stx->groups body))
      (unless (= (length groups) 1)
        (unsup "a measure's body must be a single `match` on a datatype parameter"))
@@ -357,7 +358,7 @@
     [(list 'Optionof (list 'parens (cons 'group inner))) (list 'opt (base-sort inner))]
     [(list (list 'parens (cons 'group inner))) (base-sort inner)]
     [_
-     ;; `A * B`: a pair (other tuple sizes are not modelled)
+     ;; `A * B`: a pair (other tuple sizes are not modeled)
      (define parts (split-type-at-star ts))
      (if (and parts (= (length parts) 2))
          (list 'pair (base-sort (first parts)) (base-sort (second parts)))
@@ -391,7 +392,7 @@
 
 ;; Bind the type variables of `pat` (a callee's parameter sort) so that
 ;; it is `actual` (an argument's sort), extending `h`; #f if they
-;; cannot match.  An unmodelled argument matches anything, binding
+;; cannot match.  An unmodeled argument matches anything, binding
 ;; nothing.
 (define (sort-match pat actual h)
   (cond
@@ -419,7 +420,7 @@
 
 ;; The sort of a datatype field.  A field whose type is a type variable
 ;; belongs to a polymorphic datatype, which is declared to the solver
-;; with its fields unmodelled.
+;; with its fields unmodeled.
 (define (field-sort f)
   (define s (base-sort (dfield-base f)))
   (if (sort-has-tvar? s) 'opaque s))
@@ -498,7 +499,7 @@
      (note-const-sort! const (T-sort t))
      (assume-invariant! t push-extra!)
      (hash-set env x (T const (T-sort t) (T-measures t) (string->symbol const)))]
-    ;; unmodelled or flexible: the term itself (measures, identity kept)
+    ;; unmodeled or flexible: the term itself (measures, identity kept)
     [else (hash-set env x t)]))
 
 ;; In an environment, a function defined inside the one being checked.
@@ -507,8 +508,7 @@
 (struct local-function () #:transparent)
 
 (define (local-function-message name)
-  (format "`~a` is a function defined inside another definition (or a function value); the checker does not follow calls to it, so nothing is known about its result (refinements are checked only on functions defined at the top level of the module)"
-          name))
+  (format "`~a` is a local function and cannot be used as a value" name))
 
 ;; A function definition among the tokens: `fun NAME(params) ...: body`
 ;; or an anonymous `fun (params) ...: body`.
@@ -564,7 +564,7 @@
 (define (sort-word s)
   (cond
     [(eq? s 'int) "an integer"]
-    [(eq? s 'bool) "a boolean"]
+    [(eq? s 'bool) "a Boolean"]
     [(eq? s 'sym) "a symbol"]
     [(eq? s 'char) "a character"]
     [(data-sort? s) (format "a value of type `~a`" (cadr s))]
@@ -572,14 +572,14 @@
     [(pair-sort? s) "a pair"]
     [(tvar-sort? s) (format "a value of the type variable `?~a`" (cadr s))]
     [(flexible? s) "a value of a type not yet known"]
-    [else "a value of a type the checker does not model (such as a list or a string)"]))
+    [else "a value of another type"]))
 
-;; Like `sort-word`, naming the declared type of an unmodelled value
+;; Like `sort-word`, naming the declared type of an unmodeled value
 ;; when the term knows it.
 (define (term-word t)
   (cond
     [(and (eq? (T-sort t) 'opaque) (hash-ref (T-measures t) '%type #f))
-     => (lambda (ts) (format "a value of type ~a, which the checker does not model" (base-name ts)))]
+     => (lambda (ts) (format "a value of type ~a" (base-name ts)))]
     [else (sort-word (T-sort t))]))
 
 (define (need-sort t0 want who)
@@ -774,8 +774,7 @@
      (unless (equal? (T-sort a) (T-sort b))
        (unsup "`~a` compares ~a with ~a" op (term-word a) (term-word b)))
      (when (eq? (T-sort a) 'opaque)
-       (unsup "`~a` is not checked on this type; compare integers or booleans, or use `is_empty`/`length` for lists"
-              op))
+       (unsup "`~a` is not supported on ~a" op (term-word a)))
      (t-bool (format "(~a ~a ~a)" smt (T-smt a) (T-smt b)))]
     [else
      (define who (format "operator `~a`" op))
@@ -872,7 +871,7 @@
 ;; preconditions, if any, are checked when the program runs).  The box
 ;; operations are not here: their use is restricted (see Box usage
 ;; discipline).
-(define unmodelled-builtins
+(define unmodeled-builtins
   '(first list_get foldl foldr member map2
     string_get string_to_symbol to_string
     map_get map_get_k map_set map_update map_remove map_delete map_keys
@@ -891,7 +890,7 @@
     syntax_to_boolean syntax_to_integer syntax_to_list syntax_to_string
     syntax_to_symbol))
 
-;; Exactly-encodable integer/boolean builtins.
+;; Exactly-encodable integer/Boolean builtins.
 (define (builtin-exact name args)
   (define (i k who) (int-of (list-ref args k) who))
   (case name
@@ -914,7 +913,7 @@
         'array_length '(Arrayof "an array")))
 
 (define (measure-of t0 mname)
-  ;; a flexible value measured is a list or a string: unmodelled
+  ;; a flexible value measured is a list or a string: unmodeled
   (define t (at-sort t0 'opaque))
   (unless (eq? (T-sort t) 'opaque)
     (unsup "`~a` applies to ~a, but was given ~a"
@@ -926,7 +925,7 @@
       (unsup "`~a` applies to ~a, but was given a value of type ~a"
              mname (second dom) (base-name ts))))
   (when (current-in-measure)
-    (unsup "`~a` cannot be used inside a measure; a measure may only use its constructor's fields, arithmetic, and other measures" mname))
+    (unsup "a measure may not use `~a` (see Measure Functions in the guide)" mname))
   (cond
     [(hash-ref (T-measures t) mname #f) => values]
     [(T-src t)
@@ -988,7 +987,7 @@
          (push-extra! (format "(assert (>= ~a 0))" const))
          (when len (push-extra! (format "(assert (<= ~a ~a))" const len)))
          (sized 'length '(Listof) const)]
-        [else (unsup "`~a` is not one of the builtins the checker models" name)])))
+        [else (unsup "`~a` is not a builtin the checker knows" name)])))
 
 ;; The measure of a value, or #f when the checker cannot determine it.
 (define (try-measure t mname)
@@ -997,7 +996,7 @@
 (define (sum-of a b) (and a b (format "(+ ~a ~a)" a b)))
 (define (nonneg x) (format "(ite (>= ~a 0) ~a 0)" x x))
 
-;; An unmodelled value of a type whose head is `type-head`, with its
+;; An unmodeled value of a type whose head is `type-head`, with its
 ;; size known (an SMT term) or unknown (#f).
 (define (sized mname type-head size)
   (define src (string->symbol (fresh-name "builtin_result")))
@@ -1064,7 +1063,7 @@
        ;; ---- literals
        [(number? head)
         (unless (exact-integer? head)
-          (unsup "`~a` is not an integer; shplait has no fractional numbers, so refinements are over integers (model money as cents)"
+          (unsup "`~a` is not an integer"
                  head))
         (values (t-int (if (negative? head)
                            (format "(- ~a)" (- head))
@@ -1096,12 +1095,12 @@
         (match (parens-groups next-parens)
           [(list (list (? symbol? box-name)))
            (values (unbox-term box-name) (cdr rest))]
-          [_ (unsup "`unbox` is checked only on a `Boxof` parameter named directly")])]
+          [_ (unsup "`unbox` must be applied to a `Boxof` parameter")])]
        ;; ---- box(e) / set_box are not expressions the checker uses
        [(and (eq? head 'box) next-parens)
-        (unsup "a `box(...)` expression is checked only as an argument in a `Boxof` parameter position")]
+        (unsup "`box(...)` is allowed only as the argument for a `Boxof` parameter")]
        [(and (eq? head 'set_box) next-parens)
-        (unsup "`set_box` is a statement; the checker cannot use its result as a value")]
+        (unsup "`set_box(...)` cannot be used as a value")]
        ;; ---- `if c | a | b` as an expression: an ite term.  This is
        ;; what lets a predicate say `y == (if a > b | a | b)`.
        [(eq? head 'if)
@@ -1132,7 +1131,7 @@
                 (define ty (or (hash-ref (T-measures a) '%type #f) (hash-ref (T-measures b) '%type #f)))
                 (T #f 'opaque (if ty (hash-set ms '%type ty) ms) (string->symbol (fresh-name "if_value")))]
                [else
-                (unsup "the two arms of this `if` must have the same modelled type (an integer, a boolean, a symbol, a character, an option, a pair, or a datatype) for the checker to model it")]))
+                (unsup "cannot analyze this `if`")]))
            (values (if (and (flex? a) (flex? b))
                        ;; neither arm returns, or both are of a type only
                        ;; the context determines
@@ -1176,7 +1175,7 @@
                 (when (failed-def? v)
                   (unsup "local definition `~a` cannot be checked: ~a" head (failed-def-why v)))
                 (when (untranslated? v)
-                  (unsup "this refinement depends on ~a (`~a`), which the checker cannot analyze: ~a"
+                  (unsup "this refinement depends on ~a (`~a`), which cannot be analyzed: ~a"
                          (let ([pos (untranslated-position v)])
                            (if (symbol? pos) (format "field `~a`" pos) (format "argument ~a" pos)))
                          (render-toks (untranslated-toks v))
@@ -1199,9 +1198,9 @@
                    (for-each push-prefix! (top-const-lines c))
                    (values (top-const-term c) rest)]))]
           [(set-member? (current-top-def-names) head)
-           (unsup "top-level `~a` cannot be checked: it is not a `def` the checker can analyze" head)]
+           (unsup "top-level `~a` cannot be analyzed" head)]
           [else
-           (unsup "identifier `~a` is not a parameter, a local `def`, or a pattern variable of this function"
+           (unsup "`~a` is not a parameter, local definition, or pattern variable"
                   head)])]
        ;; ---- grouping and rejects
        [(and (pair? head) (eq? (car head) 'parens))
@@ -1228,7 +1227,7 @@
     [else
      (define elem-sort (base-sort (param-base p)))
      (unless (sort-smt elem-sort)
-       (unsup "`unbox(~a)` has type ~a, which the checker does not model"
+       (unsup "the contents of `~a`, of type ~a, cannot be used in a claim"
               box-name (base-name (param-base p))))
      (define const (fresh-name (format "~a_content" box-name)))
      (push-prefix! (format "(declare-const ~a ~a)" const (sort-smt elem-sort)))
@@ -1267,7 +1266,7 @@
            sort)]
     [else
      (when (current-in-measure)
-       (unsup "in a measure, every field of `~a(...)` must be an expression the checker models" ctor))
+       (unsup "a measure cannot build `~a(...)` from these arguments" ctor))
      (define const (fresh-name (format "~a_value" ctor)))
      (push-extra! (format "(declare-const ~a ~a)" const tname))
      (push-extra! (format "(assert ((_ is ~a) ~a))" ctor const))
@@ -1323,10 +1322,10 @@
                           (if y (list (format "(= (%snd ~a) ~a)" c y)) '()))))))
 
 ;; The sort of a term standing for a component: an unknown one is
-;; unmodelled.
+;; unmodeled.
 (define (component-sort t) (if t (T-sort t) 'opaque))
 
-;; A component of a pair term: `which` is 'fst or 'snd.  An unmodelled
+;; A component of a pair term: `which` is 'fst or 'snd.  An unmodeled
 ;; component is a constant named after `base`, equal to it.
 (define (pair-select which t base)
   (define s (if (eq? which 'fst) (cadr (T-sort t)) (caddr (T-sort t))))
@@ -1367,7 +1366,7 @@
                          (pair-of (and ta (at-sort ta (cadr want))) (and tb (at-sort tb (caddr want)))
                                   (cadr want) (caddr want))))
             (pair-of ta tb (component-sort ta) (component-sort tb)))]
-       ;; a tuple of another size: not modelled
+       ;; a tuple of another size: not modeled
        [else (unknown)])]
     [(fst snd)
      (n-args 1)
@@ -1409,7 +1408,7 @@
   ;; inside this one) is not the top-level function it may share its
   ;; name with: lexically it is the local binding, a function value the
   ;; checker does not follow.  In a body its result is a value of its
-  ;; type about which nothing else is known, as for an unmodelled
+  ;; type about which nothing else is known, as for an unmodeled
   ;; builtin; a predicate may not call it.
   (let ([v (hash-ref env head #f)])
     (when (failed-def? v)
@@ -1418,7 +1417,7 @@
                      (hash-has-key? (current-failed-locals) head)))
   (define callee (and (not local?) (hash-ref (current-sig-table) head #f)))
   (define msr (and (not local?) (hash-ref (current-measure-table) head #f)))
-  ;; Inside a predicate only the modelled builtins and this module's
+  ;; Inside a predicate only the modeled builtins and this module's
   ;; measures may be called; a module function of the same name as a
   ;; builtin shadows it, so it is refused too rather than silently
   ;; read as the builtin.
@@ -1427,7 +1426,7 @@
                  (or msr
                      (hash-ref (current-ctor-table) head #f)
                      (and (memq head predicate-callables) (not callee))))
-      (unsup "a refinement predicate may not call `~a`: the only calls allowed in a predicate are the builtins `max`, `min`, `add1`, `sub1`, `is_even`, `is_odd`, the measures `length`, `string_length`, `array_length`, `is_empty`, `is_cons`, the options and pairs `some`, `none`, `is_some`, `is_none`, `values`, `fst`, `snd`, and this module's `measure fun`s"
+      (unsup "a predicate may not call `~a` (see The Predicate Language in the guide)"
              head)))
   (cond
     [local?
@@ -1505,7 +1504,7 @@
              (assume-invariant! rt push-extra!)
              (assume-ret! rt)
              rt]
-            ;; Result type is not modelled: an opaque value, usable only
+            ;; Result type is not modeled: an opaque value, usable only
             ;; through a measure (which its return refinement may fix).
             [else
              (push-extra! (format "(declare-const ~a Opaque)" const))
@@ -1559,10 +1558,10 @@
      (values (t-opaque-typed '(Void) #f) rest)]
     ;; Another built-in: its result is a value of whatever type its use
     ;; needs, about which nothing more is known.
-    [(memq head unmodelled-builtins)
+    [(memq head unmodeled-builtins)
      (values (flex-term (fresh-value-maker (format "~a_result" head))) rest)]
     [else
-     (unsup "call to `~a`, which is neither a function defined in this module nor a Shplait built-in, so the checker has no specification for it"
+     (unsup "call to `~a`, which is neither defined in this module nor a Shplait builtin"
             head)]))
 
 ;; ======================================================================
@@ -1608,7 +1607,7 @@
      (block->branches (cons 'block gs) env)]
     [(cons (? symbol? kw) _)
      #:when (memq kw '(letrec let_cc begin try time trace))
-     (unsup "`~a` is not supported inside a checked function body; use a local `def` or a `let` for a binding, or move the code into its own `fun`"
+     (unsup "`~a` is not supported in a checked function body"
             kw)]
     [_
      (define-values (t returns) (with-divergence (lambda () (expr->term toks env))))
@@ -2122,7 +2121,7 @@
                       #:when (file-exists? (build-path home rel)))
             (path->string (build-path home rel))))
         (error 'shplait/liquid
-               "z3 not found; refinement checking requires z3. Put it on PATH, or set the Z3 environment variable to its location (DrRacket started from the Finder does not see the shell's PATH, so start it from a terminal or set Z3)"))))
+               "Z3 not found (see Installing Liquid Shplait in the guide)"))))
 
 (define z3-timeout-seconds 10)
 (define small-value-bound 3)
@@ -2206,11 +2205,10 @@
      (define nl (regexp-match-positions #rx"\n" trimmed))
      (values 'sat (if nl (substring trimmed (cdar nl)) ""))]
     [(regexp-match? #rx"timeout|unknown" trimmed)
-     (unsup "z3 gave up on obligation `~a` after ~a seconds (~a). The claim may still be true: the checker proves a claim by unfolding measures a step at a time and it cannot reason by induction, so a fact about every value of a recursive datatype (that a smaller scope implies a larger one, say) is out of its reach unless a precondition states exactly what the call needs"
-            label z3-timeout-seconds (string-trim trimmed))]
+     (unsup "Z3 timed out after ~a seconds (~a); the claim may still be true (see Timeout in the guide)"
+            z3-timeout-seconds (string-trim trimmed))]
     [else
-     (unsup "z3 could not decide obligation `~a` (output: ~a)"
-            label
+     (unsup "Z3 could not decide the claim (output: ~a)"
             (if (> (string-length trimmed) 200)
                 (string-append (substring trimmed 0 200) "...")
                 trimmed))]))
@@ -2448,8 +2446,7 @@
     [else
      (with-handlers ([unsupported?
                       (lambda (e)
-                        (add-err! (format "the refinement on ~a" who)
-                                  (unsupported-why e))
+                        (add-err! who (unsupported-why e))
                         #f)])
       (define bound-term
         (let ([s (base-sort base)])
@@ -2515,7 +2512,7 @@
           (walk rest)]
          [(cons (? symbol? name) rest)
           #:when (refined-ctor? name)
-          (err "constructor `~a` has a refined field, so it may be used only as a direct call `~a(...)`; passing it as a value would build values nothing checked"
+          (err "constructor `~a` has a refined field, so it must be called directly, as in `~a(...)`"
                name name)
           (walk rest)]
          [_ (when (pair? (car x)) (walk (car x)))
@@ -2558,7 +2555,7 @@
          [(cons 'fun _)
           #:when (fun-def-parts x)
           (for ([b (in-list (box-names-in x))])
-            (err "a function defined inside another may not use that function's `Boxof` parameter `~a` (the checker tracks a box only in the function that receives it); pass the box to a top-level function instead"
+            (err "a local function may not use the enclosing function's `Boxof` parameter `~a`"
                  b))]
          [(list-rest (? symbol? name) (cons 'parens groups) rest)
           (define actuals
@@ -2595,7 +2592,7 @@
   (define p (and name (hash-ref (current-box-params) name #f)))
   (define def-entry (and name (hash-ref (current-box-defs) name #f)))
   (define (reject why)
-    (add-err! (format "argument ~a of the call to `~a`" j callee-name)
+    (add-err! (format "call to `~a`, argument ~a" callee-name j)
               (format "~a, but that position needs ~a; pass `box(<expression>)` directly, forward a `Boxof` parameter declared with the same element refinement, or use a top-level `def name = box(...)` that is only ever used at this refinement"
                       why (class-desc cls))))
   (define (check-contents! init what)
@@ -2604,7 +2601,7 @@
       [(list 'box pred)
        (with-handlers ([unsupported?
                         (lambda (e)
-                          (add-err! (format "argument ~a of the call to `~a`" j callee-name)
+                          (add-err! (format "call to `~a`, argument ~a" callee-name j)
                                     (unsupported-why e)))])
          (define t (expr->term init (hash)))
          (define goal (bool-of (parameterize ([current-allow-calls #f])
@@ -2687,7 +2684,7 @@
      (values 'def name (list-tail rest (add1 eq-pos)))]
     [(cons (? symbol? kw) _)
      #:when (memq kw '(letrec let_cc begin try time trace macro module type import))
-     (unsup "`~a` is not supported inside a checked function body; use a local `def` or a `let` for a binding, or move the code into its own `fun`"
+     (unsup "`~a` is not supported in a checked function body"
             kw)]
     [_ (values 'expr #f toks)]))
 
@@ -2697,7 +2694,7 @@
   (define (add-obl! o) (set! obls (cons o obls)))
   (define (add-err! label why)
     (set! errs (cons (list (fn-name f)
-                           (format "fun `~a`: cannot check ~a: ~a"
+                           (format "`~a`, ~a: cannot check: ~a"
                                    (fn-name f) label why))
                      errs)))
   (define prefix (box '()))
@@ -2732,17 +2729,17 @@
     ;; An obligation that would only repeat the same message is skipped.
     (define bad-params
       (for/set ([p (in-list (fn-params f))]
-                #:unless (validate-refinement! (format "parameter `~a`" (param-name p))
+                #:unless (validate-refinement! (format "refinement on parameter `~a`" (param-name p))
                                                (param-refinement p) (param-base p)
                                                base-env add-err!))
         (param-name p)))
     (define ret-ok?
-      (validate-refinement! "the return type" (fn-ret f) (fn-ret-base f)
+      (validate-refinement! "return refinement" (fn-ret f) (fn-ret-base f)
                             base-env add-err!))
 
     ;; ---- preconditions, once per function
     (with-handlers ([unsupported?
-                     (lambda (e) (add-err! "this function's preconditions"
+                     (lambda (e) (add-err! "preconditions"
                                            (unsupported-why e)))])
       (parameterize ([current-allow-calls #f])
         (for ([p (in-list (fn-params f))]
@@ -2760,7 +2757,7 @@
     ;; ---- constructor and box usage discipline (total scans)
     (check-ctor-escape! (cons 'body (fn-body-groups f))
                         (lambda (fmt . args)
-                          (add-err! "the use of a constructor" (apply format fmt args))))
+                          (add-err! "constructor use" (apply format fmt args))))
     (walk-box-tree (cons 'body (fn-body-groups f))
                    (lambda (n) (hash-ref (current-box-params) n #f))
                    (lambda (callee-name j actual cls)
@@ -2768,7 +2765,7 @@
                        (check-box-argument (fn-name f) callee-name j actual cls
                                            add-err! add-obl!)))
                    (lambda (fmt . args)
-                     (add-err! "the use of a `Boxof` value" (apply format fmt args))))
+                     (add-err! "`Boxof` use" (apply format fmt args))))
 
     ;; ---- walk the body statement by statement
     (define groups (fn-body-groups f))
@@ -2778,7 +2775,7 @@
       (for/fold ([env base-env]) ([st (in-list stmts)])
         (with-handlers ([unsupported?
                          (lambda (e)
-                           (add-err! "a statement of the body" (unsupported-why e))
+                           (add-err! "statement" (unsupported-why e))
                            env)])
           (define-values (kind name rhs) (classify-statement st))
           (emit-call-obligations! f st env add-obl! add-err! prefix)
@@ -2839,7 +2836,7 @@
     (when (and ret-ok? (set-empty? bad-params) (fn-ret f) (not (trivially-true? (fn-ret f))))
       (match-define (refinement ret-bound ret-pred) (fn-ret f))
       (with-handlers ([unsupported?
-                       (lambda (e) (add-err! "the return obligation" (unsupported-why e)))])
+                       (lambda (e) (add-err! "return" (unsupported-why e)))])
         (define branches (body->branches result env))
         (for ([b (in-list branches)]
               [i (in-naturals 1)]
@@ -2883,7 +2880,7 @@
   (define calls (parameterize ([current-scan-errors scan-errors]) (find-calls toks outer-env)))
   (define reported (remove-duplicates (reverse (unbox scan-errors))))
   (for ([why (in-list reported)])
-    (add-err! "a local definition" why))
+    (add-err! "local definition" why))
   ;; a use of such a definition would only repeat the message
   (define (add-err*! label why)
     (unless (for/or ([r (in-list reported)]) (string-suffix? why r))
@@ -2902,7 +2899,7 @@
     ;; the built-ins `unreachable()` and `assert(P)`
     [(with-handlers ([unsupported?
                       (lambda (e)
-                        (add-err! (format "the `~a`" callee-name) (unsupported-why e))
+                        (add-err! (format "`~a`" callee-name) (unsupported-why e))
                         #t)])
        (reachability-obligation (fn-name f) callee-name actuals path-conds env))
      => (lambda (o) (when (obligation? o) (add-obl! o)))]
@@ -2915,17 +2912,17 @@
            => (lambda (entry)
                 (match (cdr entry)
                   [(list 'box (? list?))
-                   (add-err! (format "the `set_box` on `~a`" box-name)
+                   (add-err! (format "`set_box` on `~a`" box-name)
                              "a top-level box viewed through an element refinement cannot be written inside a function; pass it as a `Boxof` parameter instead")]
                   [_ (void)]))]
           [(not p)
-           (add-err! (format "the `set_box` on `~a`" box-name)
+           (add-err! (format "`set_box` on `~a`" box-name)
                      "the target of `set_box` must be a `Boxof` parameter of this function")]
           [(and (param-refinement p) (not (trivially-true? (param-refinement p))))
            (match-define (refinement bound pred) (param-refinement p))
            (with-handlers ([unsupported?
                             (lambda (e)
-                              (add-err! (format "the `set_box` obligation on `~a`" box-name)
+                              (add-err! (format "`set_box` on `~a`" box-name)
                                         (unsupported-why e)))])
              ;; the value's constants stay function-level (the cache
              ;; below reuses them), but a never-returning call in it
@@ -2950,7 +2947,7 @@
                (hash-clear! (current-unbox-cache))
                (hash-set! (current-unbox-cache) box-name value-t)))]
           [else (void)])]
-       [_ (add-err! "a `set_box`"
+       [_ (add-err! "`set_box`"
                     "the target of `set_box` must be a `Boxof` parameter named directly")])]
     ;; constructing a datatype value: each refined field is an obligation
     [(hash-ref (current-ctor-table) callee-name #f)
@@ -2964,7 +2961,7 @@
               (match-define (refinement bound pred) (dfield-refinement fld))
               (with-handlers ([unsupported?
                                (lambda (e)
-                                 (add-err! (format "field `~a` of `~a`"
+                                 (add-err! (format "~a, field `~a`"
                                                    (dfield-name fld) callee-name)
                                            (unsupported-why e)))])
                 (parameterize ([current-extras (box '())])
@@ -2984,7 +2981,7 @@
      (when callee
        (cond
          [(not (= (length actuals) (length (fn-params callee))))
-          (add-err! (format "the call to `~a`" callee-name)
+          (add-err! (format "call to `~a`" callee-name)
                     "argument count does not match the definition")]
          [else
           (for ([actual (in-list actuals)]
@@ -2996,7 +2993,7 @@
             (match-define (refinement bound pred) (param-refinement cp))
             (with-handlers ([unsupported?
                              (lambda (e)
-                               (add-err! (format "the call to `~a` (argument ~a)" callee-name j)
+                               (add-err! (format "call to `~a`, argument ~a" callee-name j)
                                          (unsupported-why e)))])
               (parameterize ([current-extras (box '())])
                 (define actual-t (at-declared (expr->term actual env) (param-base cp) #:in-caller? #t))
@@ -3042,9 +3039,9 @@
                  [current-prefix prefix]
                  [current-extras prefix])
     (define ok?
-      (validate-refinement! (format "def `~a`" name) r base (hash)
+      (validate-refinement! "definition refinement" r base (hash)
                             (lambda (label why)
-                              (set! errs (cons (list name (format "def `~a`: cannot check ~a: ~a"
+                              (set! errs (cons (list name (format "`~a`, ~a: cannot check: ~a"
                                                                  name label why))
                                                errs)))))
     (when (and ok? r (not (trivially-true? r)))
@@ -3052,7 +3049,7 @@
       (with-handlers ([unsupported?
                        (lambda (e)
                          (set! errs (cons (list name
-                                                (format "def `~a`: cannot check its refinement: ~a"
+                                                (format "`~a`, definition refinement: cannot check: ~a"
                                                         name (unsupported-why e)))
                                           errs)))])
         (define rhs-t (at-declared (expr->term rhs-toks (hash)) base))
@@ -3173,9 +3170,9 @@
                          (lambda (e)
                            (define why (unsupported-why e))
                            (cond
-                             [(regexp-match #px"^a refinement predicate may not call `([^`]+)`" why)
+                             [(regexp-match #px"^a predicate may not call `([^`]+)`" why)
                               => (lambda (m)
-                                   (format "its right-hand side calls `~a`, and a top-level `def` is modelled only when its right-hand side makes no calls"
+                                   (format "its right-hand side calls `~a`"
                                            (second m)))]
                              [else why]))])
           (parameterize ([current-prefix lines]
@@ -3223,7 +3220,7 @@
   (define errs '())
   (define prefix (box '()))
   (define (add-err0! label why [anchor #f])
-    (set! errs (cons (list anchor-name (format "~a: ~a" label why) anchor) errs)))
+    (set! errs (cons (list anchor-name (format "~a: cannot check: ~a" label why) anchor) errs)))
   (define (add-obl0! o) (set! obls (cons o obls)))
   (define add-err! add-err0!)
   (define add-obl! add-obl0!)
@@ -3318,7 +3315,7 @@
         [`(group . ,toks)
          (check-ctor-escape! toks
                              (lambda (fmt . args)
-                               (add-err! "a top-level use of a constructor"
+                               (add-err! "top-level constructor use"
                                          (apply format fmt args))))
          (walk-box-tree toks
                         (lambda (n) #f)
@@ -3351,7 +3348,7 @@
                    (match-define (refinement bound pred) (dfield-refinement fld))
                    (with-handlers ([unsupported?
                                     (lambda (e)
-                                      (add-err! (format "top-level `~a`, field `~a`"
+                                      (add-err! (format "top-level ~a, field `~a`"
                                                         callee-name (dfield-name fld))
                                                 (unsupported-why e)))])
                      (parameterize ([current-extras (box '())])
@@ -3379,7 +3376,7 @@
                  (match-define (refinement bound pred) (param-refinement cp))
                  (with-handlers ([unsupported?
                                   (lambda (e)
-                                    (add-err! (format "top-level call to `~a` (argument ~a)"
+                                    (add-err! (format "top-level call to `~a`, argument ~a"
                                                       callee-name j)
                                               (unsupported-why e)))])
                    (parameterize ([current-extras (box '())])
@@ -3596,7 +3593,7 @@
       (with-handlers ([unsupported?
                        (lambda (e)
                          (define nm (match (tl->list rec) [(cons name _) (id-sym name)]))
-                         (values ms (cons (list nm (format "measure `~a`: ~a" nm (unsupported-why e)))
+                         (values ms (cons (list nm (format "`~a`, measure: cannot check: ~a" nm (unsupported-why e)))
                                           errs)))])
         (values (cons (parse-measure-record rec) ms) errs))))
   (parameterize ([current-measure-table (for/hash ([m (in-list measures)]) (values (measure-name m) m))])
@@ -3606,7 +3603,7 @@
         (with-handlers ([unsupported?
                          (lambda (e)
                            (values ds (cons (list (measure-name m)
-                                                  (format "measure `~a`: ~a" (measure-name m) (unsupported-why e)))
+                                                  (format "`~a`, measure: cannot check: ~a" (measure-name m) (unsupported-why e)))
                                             errs)))])
           (define-values (header body) (measure-definition m))
           (values (cons (cons header body) ds) errs))))
@@ -3642,7 +3639,7 @@
                        (lambda (e)
                          (define nm (match (tl->list rec)
                                       [(cons name _) (id-sym name)]))
-                         (values fns (cons (list nm (format "fun `~a`: ~a" nm (unsupported-why e)))
+                         (values fns (cons (list nm (format "`~a`: cannot check: ~a" nm (unsupported-why e)))
                                            errs)))])
         (values (cons (parse-fun-record rec) fns) errs))))
   (define-values (rdefs rdef-errs)
@@ -3652,7 +3649,7 @@
                        (lambda (e)
                          (define nm (match (tl->list rec)
                                       [(cons name _) (id-sym name)]))
-                         (values ds (cons (list nm (format "def `~a`: ~a" nm (unsupported-why e)))
+                         (values ds (cons (list nm (format "`~a`: cannot check: ~a" nm (unsupported-why e)))
                                           errs)))])
         (values (cons (parse-def-record rec) ds) errs))))
   ;; In an interaction the groups are the form typed at the prompt and
@@ -3723,7 +3720,7 @@
                                                 "a datatype field refinement"))
                                      #f)))]
                         #:when why)
-              (list ctor (format "the refinement on field `~a` of `~a`: ~a" (dfield-name f) ctor why)))))
+              (list ctor (format "~a, field `~a`: cannot check: ~a" ctor (dfield-name f) why)))))
       (define all-errs (append rec-errs rdef-errs field-errs
                                (for/list ([m (in-list box-def-errs)])
                                  (list anchor-name m))))
@@ -3748,7 +3745,11 @@
           (with-handlers ([unsupported?
                            (lambda (e)
                              (cons (list (obligation-owner o)
-                                         (format "~a: ~a" (obligation-owner o) (unsupported-why e))
+                                         (format "~a~a: cannot check: ~a"
+                                                 (if (eq? (obligation-owner o) 'module)
+                                                     ""
+                                                     (format "`~a`, " (obligation-owner o)))
+                                                 (obligation-label o) (unsupported-why e))
                                          (obligation-anchor o))
                                    acc))])
             (define-values (verdict model) (run-z3 (obligation-program o) (obligation-label o)))

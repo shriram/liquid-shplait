@@ -40,7 +40,7 @@ fun positive_or_fail(n :: Int) :: {r :: Int | r > 0}:
   let m = (if n > 0 | n | error(#'positive_or_fail, "nonpositive")):
     m
 
-// an unmodelled right-hand side is fine as long as nothing needs it
+// an unmodeled right-hand side is fine as long as nothing needs it
 fun ignores_string({n :: Int | n > 0}) :: {r :: Int | r > 0}:
   let s = to_string(n):
     n

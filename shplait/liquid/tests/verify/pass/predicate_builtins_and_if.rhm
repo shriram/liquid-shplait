@@ -1,6 +1,6 @@
 #lang shplait/liquid
 
-// Predicates may use the modelled builtins and `if`, so a functional
+// Predicates may use the modeled builtins and `if`, so a functional
 // specification can be an equation.
 
 fun bigger(a :: Int, b :: Int) :: {y :: Int | y == max(a, b)}:

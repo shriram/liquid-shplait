@@ -1,5 +1,5 @@
 #lang shplait/liquid
-// Symbols are modelled: equality and inequality, and literals #'x.
+// Symbols are modeled: equality and inequality, and literals #'x.
 
 type Tag
 | tag(name :: Symbol, n :: Int)

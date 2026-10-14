@@ -118,8 +118,8 @@ meta:
 
   // Encoding: a record is a tree of identifiers, groups (types,
   // predicates, right-hand sides), a body (several groups), symbols,
-  // booleans and lists.  Groups go in brackets, lists in parens, a body
-  // in a block, symbols as strings; identifiers and booleans as they are.
+  // Booleans and lists.  Groups go in brackets, lists in parens, a body
+  // in a block, symbols as strings; identifiers and Booleans as they are.
   fun enc_id(id) :: Syntax: Syntax.make_group([id])
   fun enc_group(g) :: Syntax:
     match g
@@ -422,11 +422,8 @@ decl.macro 'liquid_module_end()':
 // position the checker does not support; fail closed with a message.
 type_expr.just_macro '#%braces $g ...':
   ~op_stx self
-  syntax_meta.error("refinement braces are only checked on `fun` parameters, "
-                      +& "`fun` return types, `Boxof` parameter elements, `def` "
-                      +& "annotations, and datatype fields; this position is not "
-                      +& "supported (a `Listof`, `Optionof` or `Mapof` element, "
-                      +& "a pair component, a function type, or an anonymous `fun`)",
+  syntax_meta.error("refinements are allowed only on `fun` parameters and results, "
+                      +& "`Boxof` elements, `def`s, and datatype fields",
                     self)
 
 // ------------------------------------------------------------------
@@ -439,7 +436,7 @@ type_expr.just_macro '#%braces $g ...':
 // a top-level entity: a function whose calls it finds by name, a `def`
 // the rest of the module sees.  Inside another definition (a function
 // body, a `let` body) or on an anonymous function, a refinement would
-// need closures to be modelled, so it is rejected here with a message
+// need closures to be modeled, so it is rejected here with a message
 // that says so, instead of reaching shplait's parser or the checker
 // and failing there for a reason that is not the real one.
 meta:
@@ -449,21 +446,13 @@ meta:
   fun internal_definition() :: Boolean:
     rkt.#{syntax-local-context}() is_a PairList
 
-  fun refinement_only_at_top_level(what :: String, advice :: String, where_stx):
-    syntax_meta.error("refinements are checked only on definitions at the top level of "
-                        +& "the module, and " +& what +& " is defined inside another "
-                        +& "definition; " +& advice,
+  fun refinement_only_at_top_level(what :: String, where_stx):
+    syntax_meta.error("refinements are allowed only on top-level definitions, and "
+                        +& what +& " is not one",
                       where_stx)
-
-  def function_advice:
-    "define it at the top level, passing it what it uses from the enclosing "
-      +& "definition as parameters, or drop the refinement"
 
   fun refined_anonymous(where_stx):
-    syntax_meta.error("refinements on an anonymous `fun` are not checked (the checker "
-                        +& "follows a function's calls by its name); define the function "
-                        +& "with `fun NAME(...)` at the top level of the module",
-                      where_stx)
+    syntax_meta.error("refinements are not allowed on an anonymous `fun`", where_stx)
 
   fun reject_refined_anonymous_params(args :: List):
     for (a: args):
@@ -515,10 +504,7 @@ expr.macro
 // there.
 | 'fun ($arg, ...)':
     ~op_stx self
-    syntax_meta.error("expected `:` and a body after the arguments of an anonymous `fun`; "
-                        +& "inside parentheses shplait does not accept a return type (`:: T`) "
-                        +& "on an anonymous `fun`, so drop it there or write the `fun` "
-                        +& "without parentheses",
+    syntax_meta.error("an anonymous `fun` inside parentheses cannot have a return type (`:: T`)",
                       self)
 | 'fun $tail ...':
     'sh.fun $tail ...'
@@ -531,7 +517,7 @@ defn.macro
 | 'fun $(id :: Identifier) ($(a :: RArg), ...) :: {$(r :: Identifier) :: $rt ... | $rg; ...}:
      $body':
     when internal_definition()
-    | refinement_only_at_top_level("function `" +& Syntax.unwrap(id) +& "`", function_advice, id)
+    | refinement_only_at_top_level("function `" +& Syntax.unwrap(id) +& "`", id)
     stash_fun([id,
                [[a.binder, a.base, refinement_of(a.bound, a.pred), a.kind], ...],
                [r, '$rt ...', join_groups([rg, ...])],
@@ -549,7 +535,7 @@ defn.macro
                    '$ret ...',
                    body])
     | any_refined([a.pred, ...]):
-        refinement_only_at_top_level("function `" +& Syntax.unwrap(id) +& "`", function_advice, id)
+        refinement_only_at_top_level("function `" +& Syntax.unwrap(id) +& "`", id)
     | ~else: #void
     'sh.fun $id ($(a.cleaned), ...) :: $ret ...:
        $body'
@@ -563,7 +549,7 @@ defn.macro
                    '',
                    body])
     | any_refined([a.pred, ...]):
-        refinement_only_at_top_level("function `" +& Syntax.unwrap(id) +& "`", function_advice, id)
+        refinement_only_at_top_level("function `" +& Syntax.unwrap(id) +& "`", id)
     | ~else: #void
     'sh.fun $id ($(a.cleaned), ...):
        $body'
@@ -579,14 +565,9 @@ value.non_macro let
 
 expr.macro
 | 'let $(b && '{$_ ...}') $_ ...':
-    syntax_meta.error("a `let` binding cannot carry a refinement: refinements are checked "
-                        +& "only on definitions at the top level of the module (inside the "
-                        +& "body the checker still knows the name equals its right-hand side)",
-                      b)
+    syntax_meta.error("a `let` binding cannot have a refinement", b)
 | 'let $(_ :: Identifier) $(op && '::') $_ ...':
-    syntax_meta.error("a `let` binding cannot carry a type or a refinement; write "
-                        +& "`let NAME = EXPRESSION: BODY` (inside the body the checker knows "
-                        +& "the name equals the expression)",
+    syntax_meta.error("a `let` binding cannot have a type; write `let NAME = EXPRESSION: BODY`",
                       op)
 | 'let $(x :: Identifier) = $rhs ...:
      $body':
@@ -643,11 +624,7 @@ defn.macro
 defn.macro
 | 'def $(id :: Identifier) :: {$(r :: Identifier) :: $t ... | $g; ...} = $rhs ...':
     when internal_definition()
-    | refinement_only_at_top_level("`def " +& Syntax.unwrap(id) +& "`",
-                                   "write it without the refinement (the checker still "
-                                     +& "knows the name equals its right-hand side), or state "
-                                     +& "the claim on a top-level function",
-                                   id)
+    | refinement_only_at_top_level("`def " +& Syntax.unwrap(id) +& "`", id)
     stash_def([id, [r, '$t ...', join_groups([g, ...])], '$t ...', '$rhs ...'])
     'sh.def $id :: $t ... = $rhs ...'
 | 'def $form ...':

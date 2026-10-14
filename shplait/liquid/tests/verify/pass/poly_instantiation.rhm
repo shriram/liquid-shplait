@@ -29,7 +29,7 @@ fun pick_pos({m :: Int | m > 0}, {n :: Int | n > 0}, b :: Boolean) :: {r :: Int 
   pick(m, n, b)
 
 // A result whose type variable no argument determines (the elements of
-// a list are not modelled) is a value of whatever type its use needs;
+// a list are not modeled) is a value of whatever type its use needs;
 // bound to a name it is one value.
 fun any_of(xs :: Listof(?a)) :: ?a:
   match xs

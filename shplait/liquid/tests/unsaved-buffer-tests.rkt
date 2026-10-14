@@ -40,9 +40,9 @@
               #f "is violated when idd(...) = onil()")
         ;; refinements below the top level, unsaved
         (list "fun outer(n :: Int) :: Int:\n  fun g({y :: Int | y > 0}) :: Int: y\n  g(1)"
-              #f "function `g` is defined inside another definition")
+              #f "function `g` is not one")
         (list "fun outer2(n :: Int) :: Int:\n  def m :: {k :: Int | k > 0} = n * n + 1\n  m"
-              #f "`def m` is defined inside another definition")
+              #f "`def m` is not one")
         (list "def k2 = (let y = 2: y * 2)" #t "")))
 
 (for ([c cases])
