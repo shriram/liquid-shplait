@@ -614,7 +614,14 @@
 ;; A maker for a fresh value named after `base`.  Its declaration (and
 ;; `assume!`'s facts about it) go to the function-level prefix: the
 ;; term may be used by obligations other than the one that resolved it.
-(define ((fresh-value-maker base [assume! void]) want)
+(define (fresh-value-maker base [assume! void])
+  ;; the value's facts hold where it is made, not where its sort is fixed
+  (define g (fact-guard))
+  (lambda (want)
+    (parameterize ([current-guard-override g])
+      (make-fresh-value base assume! want))))
+
+(define (make-fresh-value base assume! want)
   (define const (fresh-name base))
   (cond
     [(sort-smt want)
@@ -676,6 +683,38 @@
 (define (with-guard g thunk)
   (parameterize ([current-reach-guard (conj (current-reach-guard) g)])
     (thunk)))
+
+;; ----------------------------------------------------------------------
+;; Assumptions hold only where the code that justifies them runs
+;;
+;; A callee's return claim holds of a call's result only on a path that
+;; makes the call; a datatype invariant or a field refinement holds of a
+;; value only where the value exists.  Such a claim can be false for
+;; some arguments (a function that raises an error on them may promise
+;; anything about the ones it returns on), so an assumption made where
+;; the facts of every obligation of the function go must be guarded by
+;; the condition under which it is made.  `current-path` is that
+;; condition relative to the start of the function (or of the
+;; obligation, whose own path conditions are part of it): the branch,
+;; `match` clause or `cond` clause being translated, and the path
+;; conditions of a call being checked.  `current-reach-guard` adds the
+;; position inside an expression.
+(define current-path (make-parameter "true"))
+(define current-guard-override (make-parameter #f))
+
+(define (at-path g thunk)
+  (parameterize ([current-path (conj (current-path) g)])
+    (thunk)))
+
+(define (fact-guard)
+  (or (current-guard-override) (conj (current-path) (current-reach-guard))))
+
+;; "(assert P)", guarded by where it is assumed.
+(define (guarded-assert p)
+  (define g (fact-guard))
+  (if (equal? g "true")
+      (format "(assert ~a)" p)
+      (format "(assert (=> ~a ~a))" g p)))
 
 ;; Run `thunk` collecting divergence; -> (values result condition),
 ;; where condition is what must hold for the evaluation to return.
@@ -1418,10 +1457,10 @@
        (when (and (fn-ret callee) (not (trivially-true? (fn-ret callee))))
          (match-define (refinement bound pred) (fn-ret callee))
          (define (assume!)
-           (push-extra! (format "(assert ~a)"
-                                (bool-of (parameterize ([current-allow-calls #f])
-                                           (expr->term pred (hash-set callee-env bound t)))
-                                         "a return refinement"))))
+           (push-extra! (guarded-assert
+                         (bool-of (parameterize ([current-allow-calls #f])
+                                    (expr->term pred (hash-set callee-env bound t)))
+                                  "a return refinement"))))
          (if (sort-smt (T-sort t))
              (assume!)
              (with-handlers ([unsupported? void]) (assume!)))))
@@ -1525,9 +1564,9 @@
           (with-divergence
            (lambda () (bool-of (expr->term cond-toks env) "an `if` condition"))))
         (append
-         (for/list ([b (in-list (body->branches then-toks env))])
+         (for/list ([b (in-list (at-path cond-smt (lambda () (body->branches then-toks env))))])
            (list (conj returns (conj cond-smt (first b))) (second b)))
-         (for/list ([b (in-list (body->branches else-toks env))])
+         (for/list ([b (in-list (at-path (negate cond-smt) (lambda () (body->branches else-toks env))))])
            (list (conj returns (conj (negate cond-smt) (first b))) (second b))))]
        [_ (unsup "`if` without exactly two `|` alternatives")])]
     [(list 'cond (list 'alts clauses ...))
@@ -1596,7 +1635,7 @@
           (define body-toks (block-result-toks else-blk))
           (loop (cdr clauses) neg-prev
                 (append (reverse
-                         (for/list ([b (in-list (body->branches body-toks env))])
+                         (for/list ([b (in-list (at-path neg-prev (lambda () (body->branches body-toks env))))])
                            (list (conj neg-prev (first b)) (second b))))
                         acc))]
          [`(block (group . ,clause-toks))
@@ -1605,13 +1644,15 @@
           ;; a guard that never returns cuts off this clause and the
           ;; ones after it
           (define-values (guard-smt returns)
-            (with-divergence
-             (lambda () (bool-of (expr->term guard-toks env) "a `cond` guard"))))
+            (at-path neg-prev
+                     (lambda ()
+                       (with-divergence
+                        (lambda () (bool-of (expr->term guard-toks env) "a `cond` guard"))))))
           (define path (conj neg-prev (conj returns guard-smt)))
           (loop (cdr clauses)
                 (conj neg-prev (conj returns (negate guard-smt)))
                 (append (reverse
-                         (for/list ([b (in-list (body->branches body-toks env))])
+                         (for/list ([b (in-list (at-path path (lambda () (body->branches body-toks env))))])
                            (list (conj path (first b)) (second b))))
                         acc))]
          [_ (unsup "unrecognized `cond` clause shape")])])))
@@ -1652,8 +1693,9 @@
        [`(block (group . ,clause-toks))
         (define-values (pat-toks body-block) (split-at-trailing-block clause-toks))
         (define body-toks (block-result-toks body-block))
-        (define-values (env* pc) (bind-pattern pat-toks env scrut))
-        (for/list ([b (in-list (body->branches body-toks env*))])
+        (define-values (env* pc) (at-path returns (lambda () (bind-pattern pat-toks env scrut))))
+        (for/list ([b (in-list (at-path (conj returns (or pc "true"))
+                                        (lambda () (body->branches body-toks env*))))])
           (list (conj returns (if pc (conj pc (first b)) (first b))) (second b)))]
        [_ (unsup "unrecognized `match` clause shape")]))))
 
@@ -1691,7 +1733,7 @@
        (push-prefix! (format "(declare-const ~a ~a)" const (or (sort-smt sort) "Opaque")))
        (note-const-sort! const sort)
        (define t (T const sort (hash) (string->symbol const)))
-       (assume-invariant! t push-prefix!)
+       (defer! (lambda () (assume-invariant! t push-prefix!)))
        (values (if (regexp-match? #rx"^_" (symbol->string name)) env (hash-set env name t))
                t)]))
   ;; -> (values env (listof term)) ; one term per pattern position.
@@ -1714,11 +1756,21 @@
       (for ([f (in-list fields)] [t (in-list terms)]
             #:when (and (dfield-refinement f) (not (trivially-true? (dfield-refinement f)))))
         (match-define (refinement bound pred) (dfield-refinement f))
-        (push-prefix! (format "(assert ~a)"
-                              (bool-of (parameterize ([current-allow-calls #f])
-                                         (expr->term pred (hash-set field-env bound t)))
-                                       "a datatype field refinement")))))
+        (defer! (lambda ()
+                  (push-prefix! (guarded-assert
+                                 (bool-of (parameterize ([current-allow-calls #f])
+                                            (expr->term pred (hash-set field-env bound t)))
+                                          "a datatype field refinement")))))))
     (values env* terms))
+  ;; What is assumed of the pattern's variables holds only where the
+  ;; pattern matches, so it waits for the pattern's condition.
+  (define deferred '())
+  (define (defer! th) (set! deferred (cons th deferred)))
+  (define-values (env* pc) (bind-pattern-shape pat-toks env scrut bind-var bind-args))
+  (at-path (or pc "true") (lambda () (for ([th (in-list (reverse deferred))]) (th))))
+  (values env* pc))
+
+(define (bind-pattern-shape pat-toks env scrut bind-var bind-args)
   (define (scrut-data?) (and scrut (data-sort? (T-sort scrut)) (T-smt scrut)))
   (define (scrut-length)
     (and scrut (eq? (T-sort scrut) 'opaque)
@@ -1800,7 +1852,11 @@
 ;; is discarded, since the scan cannot place it on the right path
 ;; (dropping it only makes the obligations stronger).
 (define (find-calls stx env)
-  (discarding-divergence (lambda () (find-calls-rec stx '() env))))
+  (parameterize ([scan-base (current-path)])
+    (discarding-divergence (lambda () (find-calls-rec stx '() env)))))
+
+;; The path where a scan starts; its path conditions extend it.
+(define scan-base (make-parameter "true"))
 
 (define (try-guard-smt toks env)
   (with-handlers ([unsupported? (lambda (e) #f)])
@@ -1808,6 +1864,12 @@
     (and (eq? (T-sort t) 'bool) (T-smt t))))
 
 (define (find-calls-rec stx path-conds env)
+  (parameterize ([current-path (conj (scan-base) (conj* path-conds))])
+    (find-calls-rec* stx path-conds env)))
+
+(define (conj* gs) (for/fold ([p "true"]) ([g (in-list gs)]) (conj p g)))
+
+(define (find-calls-rec* stx path-conds env)
   (cond
     [(not (pair? stx)) '()]
     [else
@@ -2698,122 +2760,126 @@
 (define (emit-call-obligations! f toks outer-env add-obl! add-err! prefix)
   (for ([c (in-list (find-calls toks outer-env))])
     (match-define (list callee-name actuals path-conds env) c)
-    (cond
-      ;; a call through a local binding (a function defined inside this
-      ;; one, a function-valued parameter or `let`) is not a call to the
-      ;; top-level function of that name, and has nothing to check
-      [(hash-ref env callee-name #f) (void)]
-      ;; the built-ins `unreachable()` and `assert(P)`
-      [(with-handlers ([unsupported?
-                        (lambda (e)
-                          (add-err! (format "the `~a`" callee-name) (unsupported-why e))
-                          #t)])
-         (reachability-obligation (fn-name f) callee-name actuals path-conds env))
-       => (lambda (o) (when (obligation? o) (add-obl! o)))]
-      [(eq? callee-name 'set_box)
-       (match actuals
-         [(list (list (? symbol? box-name)) value-toks)
-          (define p (hash-ref (current-box-params) box-name #f))
-          (cond
-            [(and (not p) (hash-ref (current-box-defs) box-name #f))
-             => (lambda (entry)
-                  (match (cdr entry)
-                    [(list 'box (? list?))
-                     (add-err! (format "the `set_box` on `~a`" box-name)
-                               "a top-level box viewed through an element refinement cannot be written inside a function; pass it as a `Boxof` parameter instead")]
-                    [_ (void)]))]
-            [(not p)
-             (add-err! (format "the `set_box` on `~a`" box-name)
-                       "the target of `set_box` must be a `Boxof` parameter of this function")]
-            [(and (param-refinement p) (not (trivially-true? (param-refinement p))))
-             (match-define (refinement bound pred) (param-refinement p))
-             (with-handlers ([unsupported?
-                              (lambda (e)
-                                (add-err! (format "the `set_box` obligation on `~a`" box-name)
-                                          (unsupported-why e)))])
-               ;; the value's constants stay function-level (the cache
-               ;; below reuses them), but a never-returning call in it
-               ;; excuses only this obligation
-               (define-values (value-t returns)
-                 (with-divergence (lambda () (expr->term value-toks env))))
-               ;; the element predicate speaks about the parameters, as at
-               ;; `unbox`, not about whatever a `let` binds at the call
-               (define goal
-                 (bool-of (parameterize ([current-allow-calls #f])
-                            (expr->term pred (hash-set (current-param-env) bound value-t)))
-                          "a Boxof element refinement"))
-               (add-obl!
-                (obligation (fn-name f)
-                            (format "set_box on `~a`" box-name)
-                            (assemble (cons returns path-conds) (format "(assert (not ~a))" goal))
-                            (render-claim pred)))
-               ;; After the write this box holds exactly this value, and
-               ;; any OTHER box may be an alias of it, so its cached
-               ;; contents are no longer known.
-               (when (current-unbox-cache)
-                 (hash-clear! (current-unbox-cache))
-                 (hash-set! (current-unbox-cache) box-name value-t)))]
-            [else (void)])]
-         [_ (add-err! "a `set_box`"
-                      "the target of `set_box` must be a `Boxof` parameter named directly")])]
-      ;; constructing a datatype value: each refined field is an obligation
-      [(hash-ref (current-ctor-table) callee-name #f)
-       => (lambda (fields)
-            (when (= (length actuals) (length fields))
-              (for ([actual (in-list actuals)]
-                    [fld (in-list fields)]
-                    [j (in-naturals 1)]
-                    #:when (and (dfield-refinement fld)
-                                (not (trivially-true? (dfield-refinement fld)))))
-                (match-define (refinement bound pred) (dfield-refinement fld))
-                (with-handlers ([unsupported?
-                                 (lambda (e)
-                                   (add-err! (format "field `~a` of `~a`"
-                                                     (dfield-name fld) callee-name)
-                                             (unsupported-why e)))])
-                  (parameterize ([current-extras (box '())])
-                    (define actual-t (at-declared (expr->term actual env) (dfield-base fld) #:in-caller? #t))
-                    (define siblings (sibling-env fields actuals j env))
-                    (define goal
-                      (bool-of (parameterize ([current-allow-calls #f])
-                                 (expr->term pred (hash-set siblings bound actual-t)))
-                               "a datatype field refinement"))
-                    (add-obl!
-                     (obligation (fn-name f)
-                                 (format "~a, field `~a`" callee-name (dfield-name fld))
-                                 (assemble path-conds
-                                           (format "(assert (not ~a))" goal)) (render-claim pred))))))))]
-      [else
-       (define callee (hash-ref (current-sig-table) callee-name #f))
-       (when callee
-         (cond
-           [(not (= (length actuals) (length (fn-params callee))))
-            (add-err! (format "the call to `~a`" callee-name)
-                      "argument count does not match the definition")]
-           [else
+    (parameterize ([current-path (conj (current-path) (conj* path-conds))])
+      (emit-call-obligation! f callee-name actuals path-conds env add-obl! add-err!))))
+
+(define (emit-call-obligation! f callee-name actuals path-conds env add-obl! add-err!)
+  (cond
+    ;; a call through a local binding (a function defined inside this
+    ;; one, a function-valued parameter or `let`) is not a call to the
+    ;; top-level function of that name, and has nothing to check
+    [(hash-ref env callee-name #f) (void)]
+    ;; the built-ins `unreachable()` and `assert(P)`
+    [(with-handlers ([unsupported?
+                      (lambda (e)
+                        (add-err! (format "the `~a`" callee-name) (unsupported-why e))
+                        #t)])
+       (reachability-obligation (fn-name f) callee-name actuals path-conds env))
+     => (lambda (o) (when (obligation? o) (add-obl! o)))]
+    [(eq? callee-name 'set_box)
+     (match actuals
+       [(list (list (? symbol? box-name)) value-toks)
+        (define p (hash-ref (current-box-params) box-name #f))
+        (cond
+          [(and (not p) (hash-ref (current-box-defs) box-name #f))
+           => (lambda (entry)
+                (match (cdr entry)
+                  [(list 'box (? list?))
+                   (add-err! (format "the `set_box` on `~a`" box-name)
+                             "a top-level box viewed through an element refinement cannot be written inside a function; pass it as a `Boxof` parameter instead")]
+                  [_ (void)]))]
+          [(not p)
+           (add-err! (format "the `set_box` on `~a`" box-name)
+                     "the target of `set_box` must be a `Boxof` parameter of this function")]
+          [(and (param-refinement p) (not (trivially-true? (param-refinement p))))
+           (match-define (refinement bound pred) (param-refinement p))
+           (with-handlers ([unsupported?
+                            (lambda (e)
+                              (add-err! (format "the `set_box` obligation on `~a`" box-name)
+                                        (unsupported-why e)))])
+             ;; the value's constants stay function-level (the cache
+             ;; below reuses them), but a never-returning call in it
+             ;; excuses only this obligation
+             (define-values (value-t returns)
+               (with-divergence (lambda () (expr->term value-toks env))))
+             ;; the element predicate speaks about the parameters, as at
+             ;; `unbox`, not about whatever a `let` binds at the call
+             (define goal
+               (bool-of (parameterize ([current-allow-calls #f])
+                          (expr->term pred (hash-set (current-param-env) bound value-t)))
+                        "a Boxof element refinement"))
+             (add-obl!
+              (obligation (fn-name f)
+                          (format "set_box on `~a`" box-name)
+                          (assemble (cons returns path-conds) (format "(assert (not ~a))" goal))
+                          (render-claim pred)))
+             ;; After the write this box holds exactly this value, and
+             ;; any OTHER box may be an alias of it, so its cached
+             ;; contents are no longer known.
+             (when (current-unbox-cache)
+               (hash-clear! (current-unbox-cache))
+               (hash-set! (current-unbox-cache) box-name value-t)))]
+          [else (void)])]
+       [_ (add-err! "a `set_box`"
+                    "the target of `set_box` must be a `Boxof` parameter named directly")])]
+    ;; constructing a datatype value: each refined field is an obligation
+    [(hash-ref (current-ctor-table) callee-name #f)
+     => (lambda (fields)
+          (when (= (length actuals) (length fields))
             (for ([actual (in-list actuals)]
-                  [cp (in-list (fn-params callee))]
+                  [fld (in-list fields)]
                   [j (in-naturals 1)]
-                  #:when (and (not (param-box-class cp))
-                              (param-refinement cp)
-                              (not (trivially-true? (param-refinement cp)))))
-              (match-define (refinement bound pred) (param-refinement cp))
+                  #:when (and (dfield-refinement fld)
+                              (not (trivially-true? (dfield-refinement fld)))))
+              (match-define (refinement bound pred) (dfield-refinement fld))
               (with-handlers ([unsupported?
                                (lambda (e)
-                                 (add-err! (format "the call to `~a` (argument ~a)" callee-name j)
+                                 (add-err! (format "field `~a` of `~a`"
+                                                   (dfield-name fld) callee-name)
                                            (unsupported-why e)))])
                 (parameterize ([current-extras (box '())])
-                  (define actual-t (at-declared (expr->term actual env) (param-base cp) #:in-caller? #t))
-                  (define arg-env (callee-arg-env callee actuals env))
+                  (define actual-t (at-declared (expr->term actual env) (dfield-base fld) #:in-caller? #t))
+                  (define siblings (sibling-env fields actuals j env))
                   (define goal
                     (bool-of (parameterize ([current-allow-calls #f])
-                               (expr->term pred (hash-set arg-env bound actual-t)))
-                             "a parameter refinement"))
+                               (expr->term pred (hash-set siblings bound actual-t)))
+                             "a datatype field refinement"))
                   (add-obl!
                    (obligation (fn-name f)
-                               (format "call to `~a`, argument ~a" callee-name j)
-                               (assemble path-conds (format "(assert (not ~a))" goal))
-                               (render-claim pred (call-subst callee actuals bound j)))))))]))])))
+                               (format "~a, field `~a`" callee-name (dfield-name fld))
+                               (assemble path-conds
+                                         (format "(assert (not ~a))" goal)) (render-claim pred))))))))]
+    [else
+     (define callee (hash-ref (current-sig-table) callee-name #f))
+     (when callee
+       (cond
+         [(not (= (length actuals) (length (fn-params callee))))
+          (add-err! (format "the call to `~a`" callee-name)
+                    "argument count does not match the definition")]
+         [else
+          (for ([actual (in-list actuals)]
+                [cp (in-list (fn-params callee))]
+                [j (in-naturals 1)]
+                #:when (and (not (param-box-class cp))
+                            (param-refinement cp)
+                            (not (trivially-true? (param-refinement cp)))))
+            (match-define (refinement bound pred) (param-refinement cp))
+            (with-handlers ([unsupported?
+                             (lambda (e)
+                               (add-err! (format "the call to `~a` (argument ~a)" callee-name j)
+                                         (unsupported-why e)))])
+              (parameterize ([current-extras (box '())])
+                (define actual-t (at-declared (expr->term actual env) (param-base cp) #:in-caller? #t))
+                (define arg-env (callee-arg-env callee actuals env))
+                (define goal
+                  (bool-of (parameterize ([current-allow-calls #f])
+                             (expr->term pred (hash-set arg-env bound actual-t)))
+                           "a parameter refinement"))
+                (add-obl!
+                 (obligation (fn-name f)
+                             (format "call to `~a`, argument ~a" callee-name j)
+                             (assemble path-conds (format "(assert (not ~a))" goal))
+                             (render-claim pred (call-subst callee actuals bound j)))))))]))]))
 
 ;; A callee's refinement may mention the callee's other parameters
 ;; (`{r :: Int | r <= c}`).  At a call site those names stand for the
@@ -3133,70 +3199,71 @@
                         (lambda (fmt . as) (void)))
          (for ([c (in-list (find-calls toks env))])
            (match-define (list callee-name actuals path-conds call-env) c)
-           ;; the built-ins `unreachable()` and `assert(P)`
-           (let ([o (with-handlers ([unsupported?
-                                     (lambda (e)
-                                       (add-err! (format "top-level `~a`" callee-name)
-                                                 (unsupported-why e))
-                                       #f)])
-                      (reachability-obligation anchor-name callee-name actuals path-conds call-env))])
-             (when o (add-obl! o)))
-           ;; constructing a datatype value at top level (a locally
-           ;; bound name is not the constructor or function it may shadow)
-           (let ([fields (and (not (hash-ref call-env callee-name #f))
-                              (hash-ref (current-ctor-table) callee-name #f))])
-             (when (and fields (= (length actuals) (length fields)))
+           (parameterize ([current-path (conj (current-path) (conj* path-conds))])
+             ;; the built-ins `unreachable()` and `assert(P)`
+             (let ([o (with-handlers ([unsupported?
+                                       (lambda (e)
+                                         (add-err! (format "top-level `~a`" callee-name)
+                                                   (unsupported-why e))
+                                         #f)])
+                        (reachability-obligation anchor-name callee-name actuals path-conds call-env))])
+               (when o (add-obl! o)))
+             ;; constructing a datatype value at top level (a locally
+             ;; bound name is not the constructor or function it may shadow)
+             (let ([fields (and (not (hash-ref call-env callee-name #f))
+                                (hash-ref (current-ctor-table) callee-name #f))])
+               (when (and fields (= (length actuals) (length fields)))
+                 (for ([actual (in-list actuals)]
+                       [fld (in-list fields)]
+                       [j (in-naturals 1)]
+                       #:when (and (dfield-refinement fld)
+                                   (not (trivially-true? (dfield-refinement fld)))))
+                   (match-define (refinement bound pred) (dfield-refinement fld))
+                   (with-handlers ([unsupported?
+                                    (lambda (e)
+                                      (add-err! (format "top-level `~a`, field `~a`"
+                                                        callee-name (dfield-name fld))
+                                                (unsupported-why e)))])
+                     (parameterize ([current-extras (box '())])
+                       (define actual-t (at-declared (expr->term actual call-env) (dfield-base fld) #:in-caller? #t))
+                       (define siblings (sibling-env fields actuals j call-env))
+                       (define goal
+                         (bool-of (parameterize ([current-allow-calls #f])
+                                    (expr->term pred (hash-set siblings bound actual-t)))
+                                  "a datatype field refinement"))
+                       (add-obl!
+                        (obligation anchor-name
+                                    (format "top-level ~a, field `~a`"
+                                            callee-name (dfield-name fld))
+                                    (assemble path-conds
+                                              (format "(assert (not ~a))" goal)) (render-claim pred))))))))
+             (define callee (and (not (hash-ref call-env callee-name #f))
+                                 (hash-ref (current-sig-table) callee-name #f)))
+             (when (and callee (= (length actuals) (length (fn-params callee))))
                (for ([actual (in-list actuals)]
-                     [fld (in-list fields)]
+                     [cp (in-list (fn-params callee))]
                      [j (in-naturals 1)]
-                     #:when (and (dfield-refinement fld)
-                                 (not (trivially-true? (dfield-refinement fld)))))
-                 (match-define (refinement bound pred) (dfield-refinement fld))
+                     #:when (and (not (param-box-class cp))
+                                 (param-refinement cp)
+                                 (not (trivially-true? (param-refinement cp)))))
+                 (match-define (refinement bound pred) (param-refinement cp))
                  (with-handlers ([unsupported?
                                   (lambda (e)
-                                    (add-err! (format "top-level `~a`, field `~a`"
-                                                      callee-name (dfield-name fld))
+                                    (add-err! (format "top-level call to `~a` (argument ~a)"
+                                                      callee-name j)
                                               (unsupported-why e)))])
                    (parameterize ([current-extras (box '())])
-                     (define actual-t (at-declared (expr->term actual call-env) (dfield-base fld) #:in-caller? #t))
-                     (define siblings (sibling-env fields actuals j call-env))
+                     (define actual-t (at-declared (expr->term actual call-env) (param-base cp) #:in-caller? #t))
+                     (define arg-env (callee-arg-env callee actuals call-env))
                      (define goal
                        (bool-of (parameterize ([current-allow-calls #f])
-                                  (expr->term pred (hash-set siblings bound actual-t)))
-                                "a datatype field refinement"))
+                                  (expr->term pred (hash-set arg-env bound actual-t)))
+                                "a parameter refinement"))
                      (add-obl!
                       (obligation anchor-name
-                                  (format "top-level ~a, field `~a`"
-                                          callee-name (dfield-name fld))
-                                  (assemble path-conds
-                                            (format "(assert (not ~a))" goal)) (render-claim pred))))))))
-           (define callee (and (not (hash-ref call-env callee-name #f))
-                               (hash-ref (current-sig-table) callee-name #f)))
-           (when (and callee (= (length actuals) (length (fn-params callee))))
-             (for ([actual (in-list actuals)]
-                   [cp (in-list (fn-params callee))]
-                   [j (in-naturals 1)]
-                   #:when (and (not (param-box-class cp))
-                               (param-refinement cp)
-                               (not (trivially-true? (param-refinement cp)))))
-               (match-define (refinement bound pred) (param-refinement cp))
-               (with-handlers ([unsupported?
-                                (lambda (e)
-                                  (add-err! (format "top-level call to `~a` (argument ~a)"
-                                                    callee-name j)
-                                            (unsupported-why e)))])
-                 (parameterize ([current-extras (box '())])
-                   (define actual-t (at-declared (expr->term actual call-env) (param-base cp) #:in-caller? #t))
-                   (define arg-env (callee-arg-env callee actuals call-env))
-                   (define goal
-                     (bool-of (parameterize ([current-allow-calls #f])
-                                (expr->term pred (hash-set arg-env bound actual-t)))
-                              "a parameter refinement"))
-                   (add-obl!
-                    (obligation anchor-name
-                                (format "top-level call to `~a`, argument ~a" callee-name j)
-                                (assemble path-conds (format "(assert (not ~a))" goal))
-                                (render-claim pred (call-subst callee actuals bound j)))))))))
+                                  (format "top-level call to `~a`, argument ~a" callee-name j)
+                                  (assemble path-conds (format "(assert (not ~a))" goal))
+                                  (render-claim pred (call-subst callee actuals bound j))))))))))
          ;; bind after checking, so a def cannot refer to itself
          (match toks
            [(list-rest 'def (? symbol? name) rest)
@@ -3387,7 +3454,7 @@
 ;; it is a code point (so a counterexample shows a character).
 (define (assume-invariant! t push)
   (when (and (data-sort? (T-sort t)) (T-smt t))
-    (push (format "(assert (inv_~a ~a))" (cadr (T-sort t)) (T-smt t))))
+    (push (guarded-assert (format "(inv_~a ~a)" (cadr (T-sort t)) (T-smt t)))))
   (when (and (eq? (T-sort t) 'char) (T-smt t))
     (push (format "(assert (char_ok ~a))" (T-smt t)))))
 

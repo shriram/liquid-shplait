@@ -1056,3 +1056,113 @@ check_rejects:
   fun call() :: Int:
     need(bx(none()))
   ~throws "the claim `has(bx(none()))` is violated"
+
+// call_claim_only_on_its_path_*
+//
+// A callee's return claim is assumed only on the path that makes the
+// call.  `five_if_nonzero` returns only when `d != 0`; assuming that on
+// every path would make the `d == 0` branch's claim vacuously true.
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun use(d :: Int) :: {r :: Int | r == 5}:
+    if d == 0
+    | 7
+    | five_if_nonzero(d)
+  ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when d = 0"
+
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun use(d :: Int) :: {r :: Int | r == 5}:
+    cond
+    | d == 0: 7
+    | ~else: five_if_nonzero(d)
+  ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when d = 0"
+
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun use(d :: Int, b :: Boolean) :: {r :: Int | r == 5}:
+    if b
+    | if d == 0
+      | 7
+      | five_if_nonzero(d)
+    | 5
+  ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when b = #true, d = 0"
+
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun use(d :: Int) :: {r :: Int | r == 5}:
+    def x = (if d == 0 | 7 | five_if_nonzero(d))
+    x
+  ~throws "`use`, return: the claim `r == 5` is violated"
+
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun use(d :: Int) :: {r :: Int | r == 5}:
+    if d == 0
+    | 7
+    | (if five_if_nonzero(d) == 5 | 5 | 5)
+  ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when d = 0"
+
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun use(d :: Int) :: {r :: Int | r == 5}:
+    if d == 0
+    | 7
+    | let x = five_if_nonzero(d):
+        x
+  ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when d = 0"
+
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun need_pos({k :: Int | k > 0}) :: Int:
+    k
+
+  fun use(d :: Int) :: Int:
+    if d == 0
+    | need_pos(0)
+    | need_pos(five_if_nonzero(d))
+  ~throws "`use`, call to `need_pos`, argument 1: the claim `0 > 0` is violated when d = 0"
+
+// pattern_facts_only_where_it_matches
+//
+// A field refinement is assumed only in the clause that binds the
+// field.  `bad`'s refinement is unsatisfiable; assumed everywhere, it
+// would make every claim in `use` vacuously true.
+check_rejects:
+  type T
+  | good()
+  | bad(x :: {v :: Int | v != v})
+
+  fun use(t :: T) :: {r :: Int | r == 5}:
+    match t
+    | good(): 7
+    | bad(x): 5
+  ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when t = good()"
