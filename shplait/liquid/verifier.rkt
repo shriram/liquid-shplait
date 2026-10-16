@@ -112,6 +112,11 @@
 (struct unsupported (why) #:transparent)
 (define (unsup why . args) (raise (unsupported (apply format why args))))
 
+;; A failure that a correct Liquid Shplait (and Shplait's type checker)
+;; never reaches: the message says it is a bug to report.
+(define (internal-error why . args)
+  (unsup "internal error in Liquid Shplait (please report it): ~a" (apply format why args)))
+
 ;; ======================================================================
 ;; Rhombus-value normalization
 ;; ======================================================================
@@ -132,13 +137,13 @@
      (for/list ([g (in-list gs)])
        (match g
          [(cons 'group ts) ts]
-         [_ (unsup "unrecognized program shape")]))]
+         [_ (internal-error "unrecognized program shape")]))]
     [(list 'group (cons 'block gs))
      (for/list ([g (in-list gs)])
-       (match g [(cons 'group ts) ts] [_ (unsup "unrecognized program shape")]))]
+       (match g [(cons 'group ts) ts] [_ (internal-error "unrecognized program shape")]))]
     [(cons 'block gs)
      (for/list ([g (in-list gs)])
-       (match g [(cons 'group ts) ts] [_ (unsup "unrecognized program shape")]))]
+       (match g [(cons 'group ts) ts] [_ (internal-error "unrecognized program shape")]))]
     [(cons 'group ts) (list ts)]
     [(? symbol? s) (list (list s))]
     [(? number? n) (list (list n))]
@@ -987,7 +992,7 @@
          (push-extra! (format "(assert (>= ~a 0))" const))
          (when len (push-extra! (format "(assert (<= ~a ~a))" const len)))
          (sized 'length '(Listof) const)]
-        [else (unsup "`~a` is not a builtin the checker knows" name)])))
+        [else (internal-error "`~a` is not a builtin the checker knows" name)])))
 
 ;; The measure of a value, or #f when the checker cannot determine it.
 (define (try-measure t mname)
@@ -1131,7 +1136,7 @@
                 (define ty (or (hash-ref (T-measures a) '%type #f) (hash-ref (T-measures b) '%type #f)))
                 (T #f 'opaque (if ty (hash-set ms '%type ty) ms) (string->symbol (fresh-name "if_value")))]
                [else
-                (unsup "cannot analyze this `if`")]))
+                (internal-error "the arms of this `if` have different types, which Shplait's type checker should have rejected")]))
            (values (if (and (flex? a) (flex? b))
                        ;; neither arm returns, or both are of a type only
                        ;; the context determines
@@ -1149,7 +1154,7 @@
         (values (expr->term (block-result-toks blk) (bind-let x rhs env)) '())]
        ;; ---- an anonymous function as a value
        [(and (eq? head 'fun) next-parens)
-        (unsup "a function value (an anonymous `fun`) not modeled by the language")]
+        (unsup "an anonymous `fun` cannot be used as a value here")]
        ;; ---- calls
        [(and (symbol? head) next-parens)
         (parse-call head (parens-groups next-parens) (cdr rest) env)]
@@ -3212,7 +3217,7 @@
                   (top-const (T #f (T-sort t) (T-measures t)
                                 (or (T-src t) (string->symbol (fresh-name (format "~a_def" name)))))
                              (unbox lines))])]
-              [else (unsup "its right-hand side was not found")]))))]
+              [else (internal-error "the right-hand side of a top-level `def` was not found")]))))]
       [_ table])))
 
 (define (top-level-obligations groups anchor-name rdefs)

@@ -137,7 +137,7 @@ EOF
    (list "`h`, call to `safe_div`, argument 2: the claim `(a + 1) != 0` is violated when a = -1"
          (program "fun safe_div(n :: Int, {d :: Int | d != 0}) :: Int:" "  n / d"
                   "fun h({a :: Int | a > -2}) :: Int:" "  safe_div(10, a + 1)"))
-   (list "`f`, return: cannot check: a function value (an anonymous `fun`) not modeled by the language"
+   (list "`f`, return: cannot check: an anonymous `fun` cannot be used as a value here"
          (program "fun f(n :: Int) :: {r :: Int | r > n}:"
                   "  (fun (x :: Int): x + 1)(n)"))
    (list "`midpoint`, assert: the claim `half > 0` is violated when half = 0"

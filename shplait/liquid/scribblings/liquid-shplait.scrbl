@@ -224,7 +224,7 @@ This is partial correctness: if a function does not terminate, we do not know
 anything about the result. Thus, every guarantee from Liquid Shplait comes with
 an implicit expectation that the function terminates.
 
-Division and @rhombus(mod) are modeled exactly as Shplait computes
+The checker treats division and @rhombus(mod) exactly as Shplait computes
 them: @rhombus(/) truncates, and @rhombus(mod) takes the sign of the
 divisor. That is why @rhombus(n / 2) fails for @rhombus(double) above:
 when @rhombus(n) is @rhombus(1), the result is @rhombus(0).
@@ -253,8 +253,8 @@ in their generality [@secref("limitations")]. When it cannot analyze a
 construct, it reprts a compile-time error:
 
 @verbatim(~indent: 2){
-`f`, return: cannot check: a function value (an anonymous `fun`) not
-modeled by the language
+`f`, return: cannot check: an anonymous `fun` cannot be used as a
+value here
 }
 
 @// ------------------------------------------------------------
@@ -337,7 +337,7 @@ is unknown.
 
 A pair's
 components are taken apart in a body with @rhombus(def values(x, y) = p).
-Tuples of other sizes are not modeled.
+A predicate cannot refer to the components of a tuple of another size.
 
 A character literal is written @rhombus(Char"a"); characters may be
 compared with @rhombus(==) and @rhombus(!=).
@@ -350,7 +350,11 @@ a constant. For this, Liquid Shplait provides @emph{measures}.
 A @rhombus(measure fun) is a function that predicates may call. Its body
 is a single @rhombus(match) on a datatype parameter, with one clause
 per constructor, each written in the predicate language
-(@secref("predicates")). In the following example, @rhombus(OList) reflects an
+(@secref("predicates")).
+A measure's parameters and result may be of type @rhombus(Int), @rhombus(Boolean),
+@rhombus(Symbol), @rhombus(Char), an option or a pair of these, or a datatype of this
+module, and its clauses may not use @rhombus(length), @rhombus(string_length), or
+@rhombus(array_length). In the following example, @rhombus(OList) reflects an
 ordered list (in ascending order):
 
 @rhombusblock(
@@ -398,8 +402,8 @@ means they must provide a value even when no meaningful one exists: e.g., the
 either make this value meaningless, or guard against it ever being used (e.g.,
 only caring about the value of @rhombus(ohd) in the @rhombus(ocons) case).
 
-Lists, strings, and arrays are not modeled themselves, but a predicate may
-refer to them through the measures @rhombus(length),
+A predicate cannot refer to the elements of a list, string, or array, only
+to their lengths, through the measures @rhombus(length),
 @rhombus(string_length), @rhombus(array_length), @rhombus(is_empty), and
 @rhombus(is_cons).
 

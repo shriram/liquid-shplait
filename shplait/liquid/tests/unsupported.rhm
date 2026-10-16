@@ -58,7 +58,7 @@ check_rejects:
   fun g3(a :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
     def u = (fun (x :: String): x)(a)
     safe_get(u, i)
-  ~throws "this refinement depends on argument 1 (`u`), which cannot be analyzed: local definition `u` cannot be checked: a function value (an anonymous `fun`)"
+  ~throws "this refinement depends on argument 1 (`u`), which cannot be analyzed: local definition `u` cannot be checked: an anonymous `fun` cannot be used as a value here"
 
 // dependent_arg_unmodeled
 //
@@ -72,7 +72,7 @@ check_rejects:
 
   fun g2(a :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
     safe_get((fun (x :: String): x)(a), i)
-  ~throws "which cannot be analyzed: a function value (an anonymous `fun`)"
+  ~throws "which cannot be analyzed: an anonymous `fun` cannot be used as a value here"
 
 // error_in_predicate
 //
@@ -172,7 +172,7 @@ check_rejects:
   fun f(n :: Int) :: Int:
     let s = (fun (m :: Int): to_string(m))(n):
       pos(string_length(s))
-  ~throws "`let`-bound `s` cannot be checked: a function value (an anonymous `fun`)"
+  ~throws "`let`-bound `s` cannot be checked: an anonymous `fun` cannot be used as a value here"
 
 // listof_element
 //
@@ -365,7 +365,7 @@ check_rejects:
 check_rejects:
   fun pick({xs :: Listof(Int) | true}) :: { y :: Int | y > 0 }:
     (fun (l :: Listof(Int)): 1)(xs)
-  ~throws "a function value (an anonymous `fun`)"
+  ~throws "an anonymous `fun` cannot be used as a value here"
 
 // measure_wrong_kind_field
 //
