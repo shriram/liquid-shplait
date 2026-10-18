@@ -173,7 +173,7 @@ check_rejects:
 
 // cons_head_call_checked
 //
-// Companion to verify/pass/cons_unmodelled_head.rhm: the head of a
+// Companion to verify/pass/cons_unmodeled_head.rhm: the head of a
 // `cons` is not translated, but a call inside it is still checked.
 check_rejects:
   fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
@@ -806,3 +806,436 @@ check_rejects:
       :: { s :: Int | s >= 10 }:
     a + b
   ~throws "is violated"
+
+// array_length_field_violated
+//
+// An array's length comes from `make_array`, so a construction with
+// the wrong size violates the field refinement.
+check_rejects:
+  type Matrix
+  | matrix(rows :: {r :: Int | r >= 0},
+           cols :: {c :: Int | c >= 0},
+           cells :: {a :: Arrayof(Int) | array_length(a) == rows * cols})
+  fun make({r :: Int | r >= 0}, {c :: Int | c >= 0}) :: Matrix:
+    matrix(r, c, make_array(r * c + 1, 0))
+  ~throws "`make`, matrix, field `cells`: the claim `array_length(a) == rows * cols` is violated when c = 0, r = 0"
+
+// filter_length_unknown
+//
+// `filter` may drop elements: only `length(filter(...)) <= length(l)`
+// is known.
+check_rejects:
+  fun k(l :: Listof(Int)) :: {n :: Int | n == length(l)}:
+    length(filter(fun (x): x > 0, l))
+  ~throws "the claim `n == length(l)` is violated when length(filter(...)) = 0, length(l) = 1"
+
+// string_append_index_past_first
+//
+// An index valid for the concatenation need not be valid for its first
+// part.
+check_rejects:
+  fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+    string_get(s, i)
+  fun first_part(s :: String, t :: String,
+                 {i :: Int | i >= 0 && i < string_length(s) + string_length(t)}) :: Char:
+    safe_get(string_append(s, t), i)
+  fun wrong_part(s :: String, t :: String,
+                 {i :: Int | i >= 0 && i < string_length(s) + string_length(t)}) :: Char:
+    safe_get(s, i)
+  ~throws "`wrong_part`, call to `safe_get`, argument 2: the claim `i >= 0 && i < string_length(s)` is violated when i = 0, string_length(s) = 0"
+
+// builtin_result_unconstrained
+//
+// A Shplait built-in the checker does not model may be called, but
+// nothing is known about its result beyond its type, so a claim about
+// the result is refuted.
+check_rejects:
+  fun pick(xs :: Listof(Int)) :: { y :: Int | y > 0 }:
+    list_get(xs, 0)
+  ~throws "violated when list_get(...) = "
+
+// builtin_first_unconstrained
+check_rejects:
+  fun f(l :: Listof(Int)) :: {r :: Int | r > 0}:
+    first(l)
+  ~throws "violated when first(...) = "
+
+// array_element_unconstrained
+//
+// An array element is an unknown value of the element type.
+check_rejects:
+  fun f(a :: Arrayof(Int)) :: {r :: Int | r > 0}:
+    a[0]
+  ~throws "violated when a[...] = "
+
+// nested_builtin_unconstrained
+//
+// Measures apply to unmodeled built-ins' results, but are unknown.
+check_rejects:
+  fun pos(s :: String) :: {r :: Int | r > 0}:
+    string_length(to_string(string_get(s, 0)))
+  ~throws "violated when string_length(to_string(...)) = 0"
+
+// local_function_result_unknown
+//
+// A call to a function defined inside another gives a value of its
+// result type about which nothing else is known: the checker does not
+// look inside `g`.
+check_rejects:
+  fun f(n :: Int) :: {r :: Int | r > 0}:
+    fun g(y :: Int) :: Int:
+      y * y + 1
+    g(n)
+  ~throws "violated when g(...) = 0"
+
+// function_parameter_result_unknown
+//
+// Likewise a call to a function passed as an argument.
+check_rejects:
+  fun apply(k :: Int -> Int, n :: Int) :: {r :: Int | r > 0}:
+    k(n)
+  ~throws "violated when k(...) = 0"
+
+// function_parameter_in_predicate
+//
+// A predicate may not call a function passed as an argument.
+check_rejects:
+  fun p(k :: Int -> Int, {n :: Int | n > k(0)}) :: Int:
+    n
+  ~throws "a predicate may not call `k`"
+
+// option_claim_wrong_branch
+//
+// Options are modeled: the claim fails on each branch, and the
+// counterexample names the values.
+check_rejects:
+  fun try_div(n :: Int, d :: Int) :: {o :: Optionof(Int) | is_none(o) == (d == 0)}:
+    if d == 1
+    | none()
+    | some(n)
+  ~throws "the claim `is_none(o) == (d == 0)` is violated when d = 1"
+
+// option_counterexample_shows_none
+check_rejects:
+  fun get_or(o :: Optionof(Int), dflt :: Int) :: {r :: Int | r > 0}:
+    match o
+    | none(): dflt
+    | some(v): 1
+  ~throws "violated when dflt = 0, o = none()"
+
+// option_counterexample_shows_some
+check_rejects:
+  fun get_or(o :: Optionof(Int), dflt :: Int) :: {r :: Int | r > 0}:
+    match o
+    | none(): 1
+    | some(v): v
+  ~throws "violated when o = some(0), v = 0"
+
+// option_precondition
+//
+// A precondition `is_some(o)` is checked at the call.
+check_rejects:
+  fun content({o :: Optionof(Int) | is_some(o)}) :: Int:
+    match o
+    | none(): unreachable()
+    | some(v): v
+
+  fun use(n :: Int, d :: Int) :: Int:
+    content(if d == 0 | none() | some(n))
+  ~throws "`use`, call to `content`, argument 1"
+
+// option_field_refinement
+//
+// A field refinement on an option is checked at construction.
+check_rejects:
+  type Slot
+  | slot(content :: {o :: Optionof(Int) | is_some(o)})
+
+  fun mk() :: Slot:
+    slot(none())
+  ~throws "`mk`, slot, field `content`: the claim `is_some(o)` is violated"
+
+// option_unknown_content
+//
+// The content of an option the checker does not model is unknown.
+check_rejects:
+  fun named(s :: String) :: {o :: Optionof(String) | is_none(o)}:
+    some(s)
+  ~throws "`named`, return: the claim `is_none(o)` is violated"
+
+// option_nested_counterexample
+//
+// An option inside a datatype, inside an option: the counterexample
+// shows the nested values.
+check_rejects:
+  type Tree
+  | leaf()
+  | node(kid :: Optionof(Tree), n :: Int)
+
+  fun grand_n(t :: Tree) :: {r :: Int | r != 5}:
+    match t
+    | leaf(): 0
+    | node(k, n):
+        match k
+        | none(): 0
+        | some(c):
+            match c
+            | leaf(): 0
+            | node(k2, n2): n2
+  ~throws "c = node(none(), 5)"
+
+// option_type_variable
+//
+// The type variable of `get_or_p` is instantiated at the call; its
+// return claim allows 4.
+check_rejects:
+  fun get_or_p(o :: Optionof(?a), d :: ?a) :: {r :: ?a | r == d || o == some(r)}:
+    match o
+    | none(): d
+    | some(v): v
+
+  fun use(n :: Int) :: {r :: Int | r < 4}:
+    get_or_p(some(3), 4)
+  ~throws "violated when get_or_p(...) = 4"
+
+// option_polymorphic_body
+check_rejects:
+  fun wrap(x :: ?a) :: {o :: Optionof(?a) | o == some(x)}:
+    none()
+  ~throws "`wrap`, return: the claim `o == some(x)` is violated"
+
+// pair_swap_wrong
+check_rejects:
+  fun swap(p :: Int * Int) :: {q :: Int * Int | fst(q) == snd(p) && snd(q) == fst(p)}:
+    values(fst(p), snd(p))
+  ~throws "violated when p = values("
+
+// pair_def_values
+check_rejects:
+  fun sum_pair({p :: Int * Int | fst(p) > 0}) :: {r :: Int | r > 1}:
+    def values(a, b) = p
+    a + b
+  ~throws "violated when a = 1, b = 0"
+
+// pair_nested
+check_rejects:
+  fun nest_pair(p :: (Int * Int) * Optionof(Int)) :: {r :: Int | r != 4}:
+    def values(a, o) = p
+    match o
+    | none(): 0
+    | some(v): v + fst(a)
+  ~throws "a = values("
+
+// char_counterexample
+//
+// A character in a counterexample is shown as a `Char` literal.
+check_rejects:
+  fun is_letter_a(c :: Char) :: {b :: Boolean | b}:
+    c == Char"a"
+  ~throws "violated when c = Char\""
+
+// option_top_level_def
+check_rejects:
+  def o :: {x :: Optionof(Int) | is_some(x)} = none()
+  ~throws "`o`, definition refinement: the claim `is_some(x)` is violated"
+
+// option_in_measure
+//
+// A measure may test an option field.
+check_rejects:
+  type Box2
+  | bx(c :: Optionof(Int))
+
+  measure fun has(b :: Box2) :: Boolean:
+    match b
+    | bx(c): is_some(c)
+
+  fun need({b :: Box2 | has(b)}) :: Int:
+    1
+
+  fun call() :: Int:
+    need(bx(none()))
+  ~throws "the claim `has(bx(none()))` is violated"
+
+// call_claim_only_on_its_path_*
+//
+// A callee's return claim is assumed only on the path that makes the
+// call.  `five_if_nonzero` returns only when `d != 0`; assuming that on
+// every path would make the `d == 0` branch's claim vacuously true.
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun use(d :: Int) :: {r :: Int | r == 5}:
+    if d == 0
+    | 7
+    | five_if_nonzero(d)
+  ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when d = 0"
+
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun use(d :: Int) :: {r :: Int | r == 5}:
+    cond
+    | d == 0: 7
+    | ~else: five_if_nonzero(d)
+  ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when d = 0"
+
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun use(d :: Int, b :: Boolean) :: {r :: Int | r == 5}:
+    if b
+    | if d == 0
+      | 7
+      | five_if_nonzero(d)
+    | 5
+  ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when b = #true, d = 0"
+
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun use(d :: Int) :: {r :: Int | r == 5}:
+    def x = (if d == 0 | 7 | five_if_nonzero(d))
+    x
+  ~throws "`use`, return: the claim `r == 5` is violated"
+
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun use(d :: Int) :: {r :: Int | r == 5}:
+    if d == 0
+    | 7
+    | (if five_if_nonzero(d) == 5 | 5 | 5)
+  ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when d = 0"
+
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun use(d :: Int) :: {r :: Int | r == 5}:
+    if d == 0
+    | 7
+    | let x = five_if_nonzero(d):
+        x
+  ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when d = 0"
+
+check_rejects:
+  fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+    if d == 0
+    | error(#'five_if_nonzero, "zero")
+    | 5
+
+  fun need_pos({k :: Int | k > 0}) :: Int:
+    k
+
+  fun use(d :: Int) :: Int:
+    if d == 0
+    | need_pos(0)
+    | need_pos(five_if_nonzero(d))
+  ~throws "`use`, call to `need_pos`, argument 1: the claim `0 > 0` is violated when d = 0"
+
+// pattern_facts_only_where_it_matches
+//
+// A field refinement is assumed only in the clause that binds the
+// field.  `bad`'s refinement is unsatisfiable; assumed everywhere, it
+// would make every claim in `use` vacuously true.
+check_rejects:
+  type T
+  | good()
+  | bad(x :: {v :: Int | v != v})
+
+  fun use(t :: T) :: {r :: Int | r == 5}:
+    match t
+    | good(): 7
+    | bad(x): 5
+  ~throws "`use`, return [branch 1]: the claim `r == 5` is violated when t = good()"
+
+// nested_def_counterexample
+//
+// A local `def` inside an `if` arm is checked, and named in the
+// counterexample.
+check_rejects:
+  fun c(n :: Int) :: {r :: Int | r > n}:
+    if n > 0
+    | def m = n
+      m
+    | n + 1
+  ~throws "`c`, return [branch 1]: the claim `r > n` is violated when m = 1, n = 1"
+
+// nested_block_counterexample
+check_rejects:
+  fun b(n :: Int) :: {r :: Int | r > n}:
+    if n > 0
+    | block:
+        def m = n - 1
+        m
+    | n + 1
+  ~throws "`b`, return [branch 1]: the claim `r > n` is violated when m = 0, n = 1"
+
+// nested_def_in_call
+check_rejects:
+  fun safe_div(n :: Int, {d :: Int | d != 0}) :: Int:
+    n / d
+
+  fun e(n :: Int) :: Int:
+    if n > -1
+    | def k = n
+      safe_div(10, k)
+    | 0
+  ~throws "`e`, call to `safe_div`, argument 2: the claim `k != 0` is violated when k = 0, n = 0"
+
+// nested_assert
+check_rejects:
+  fun f(n :: Int) :: Int:
+    cond
+    | n > 5:
+        def m = n - 6
+        assert(m > 0)
+        m
+    | ~else: 0
+  ~throws "`f`, assert: the claim `m > 0` is violated when m = 0, n = 6"
+
+// nested_defs_per_branch
+//
+// Each branch has its own `m`.
+check_rejects:
+  fun h(n :: Int) :: {r :: Int | r == 0}:
+    if n > 0
+    | def m = n
+      0
+    | def m = 1
+      m
+  ~throws "`h`, return [branch 2]: the claim `r == 0` is violated when m = 1"
+
+// if_unmodeled_arms
+//
+// The length of an `if` over strings is that of the arm taken.
+check_rejects:
+  fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+    string_get(s, i)
+
+  fun first_char(b :: Boolean, {s :: String | string_length(s) > 0}, t :: String) :: Char:
+    safe_get(if b | s | t, 0)
+  ~throws "violated when b = #false, string_length(s) = 1, string_length(t) = 0"
+
+check_rejects:
+  fun lst(b :: Boolean, l :: Listof(Int)) :: {r :: Int | r > 0}:
+    length(if b | l | cons(1, l))
+  ~throws "`lst`, return: the claim `r > 0` is violated when b = #true, length(l) = 0"

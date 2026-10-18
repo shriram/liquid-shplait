@@ -83,7 +83,7 @@ releases}. The checker looks for @exec{z3} first in the @tt{Z3}
 environment variable, which should hold the path of the executable;
 then on the @tt{PATH}; then, on macOS and Linux, in
 @filepath{/opt/homebrew/bin}, @filepath{/usr/local/bin},
-@filepath{/opt/local/bin}, @filepath{~/.local/bin} and
+@filepath{/opt/local/bin}, @filepath{~/.local/bin}, and
 @filepath{~/bin}. On Windows, put the directory containing
 @filepath{z3.exe} on the @tt{PATH}, or set @tt{Z3} to the path of
 @filepath{z3.exe}. DrRacket started from the macOS Finder or Dock does
@@ -224,7 +224,7 @@ This is partial correctness: if a function does not terminate, we do not know
 anything about the result. Thus, every guarantee from Liquid Shplait comes with
 an implicit expectation that the function terminates.
 
-Division and @rhombus(mod) are modelled exactly as Shplait computes
+The checker treats division and @rhombus(mod) exactly as Shplait computes
 them: @rhombus(/) truncates, and @rhombus(mod) takes the sign of the
 divisor. That is why @rhombus(n / 2) fails for @rhombus(double) above:
 when @rhombus(n) is @rhombus(1), the result is @rhombus(0).
@@ -248,13 +248,13 @@ discharge it. In such cases, Liquid Shplait will halt with an error. This is an
 inherent weakness of using refinement types---their dependency on provers---in
 return for superior ergonomics (not having to write proofs by hand).
 
-A construct that Liquid Shplait cannot analyze is a compile-time error
-naming the construct:
+The checker in Liquid Shplait cannot handle all the constructs of Shplait
+in their generality [@secref("limitations")]. When it cannot analyze a
+construct, it reprts a compile-time error:
 
 @verbatim(~indent: 2){
-fun `f`: cannot check the return obligation: call to `string_append`,
-which is neither a function defined in this module nor one of the
-builtins the checker models (`max`, `min`, ...)
+`f`, return: cannot check: an anonymous `fun` cannot be used as a
+value here
 }
 
 @// ------------------------------------------------------------
@@ -290,6 +290,59 @@ check at direct constructors. In the example above, a call like
 @rhombus(map(circle, xs)) would result in an error.
 
 @// ------------------------------------------------------------
+@section(~tag: "options"){Options, Pairs, and Characters}
+
+Liquid Shplait supports
+options, pairs, and characters. A predicate can test an
+option with @rhombus(is_none) and @rhombus(is_some), which Liquid
+Shplait adds to Shplait's built-in functions, and can take a pair apart
+with @rhombus(fst) and @rhombus(snd):
+
+@rhombusblock(
+  fun try_div(n :: Int, d :: Int) :: {o :: Optionof(Int) | is_none(o) == (d == 0)}:
+    if d == 0
+    | none()
+    | some(n / d)
+
+  fun swap(p :: Int * Int) :: {q :: Int * Int | fst(q) == snd(p) && snd(q) == fst(p)}:
+    values(snd(p), fst(p))
+)
+
+A @rhombus(match) on an option knows which case it is in, so a function
+that needs a @rhombus(some) can rule out the other case:
+
+@rhombusblock(
+  fun try_div(n :: Int, d :: Int) :: {o :: Optionof(Int) | is_none(o) == (d == 0)}:
+    if d == 0
+    | none()
+    | some(n / d)
+
+  fun content({o :: Optionof(Int) | is_some(o)}) :: Int:
+    match o
+    | none(): unreachable()
+    | some(v): v
+
+  content(try_div(7, 2))   // accepted
+  content(try_div(7, 0))   // rejected: try_div(7, 0) is none()
+)
+
+A predicate has no way to name the value inside a @rhombus(some) by
+itself (because @rhombus(none()) has no such value); it can compare the
+whole option instead, as in @rhombus(o == some(n)).
+
+What the checker knows about a string or a list is its length, and
+that is lost when the string or list is put in an option or a pair:
+in @rhombus(match some(s) | some(t): ...), the length of @rhombus(t)
+is unknown.
+
+A pair's
+components are taken apart in a body with @rhombus(def values(x, y) = p).
+A predicate cannot refer to the components of a tuple of another size.
+
+A character literal is written @rhombus(Char"a"); characters may be
+compared with @rhombus(==) and @rhombus(!=).
+
+@// ------------------------------------------------------------
 @section(~tag: "measures"){Measure Functions}
 
 Sometimes a predicate needs to depend on something more complicated than
@@ -297,7 +350,11 @@ a constant. For this, Liquid Shplait provides @emph{measures}.
 A @rhombus(measure fun) is a function that predicates may call. Its body
 is a single @rhombus(match) on a datatype parameter, with one clause
 per constructor, each written in the predicate language
-(@secref("predicates")). In the following example, @rhombus(OList) reflects an
+(@secref("predicates")).
+A measure's parameters and result may be of type @rhombus(Int), @rhombus(Boolean),
+@rhombus(Symbol), @rhombus(Char), an option or a pair of these, or a datatype of this
+module, and its clauses may not use @rhombus(length), @rhombus(string_length), or
+@rhombus(array_length). In the following example, @rhombus(OList) reflects an
 ordered list (in ascending order):
 
 @rhombusblock(
@@ -345,9 +402,10 @@ means they must provide a value even when no meaningful one exists: e.g., the
 either make this value meaningless, or guard against it ever being used (e.g.,
 only caring about the value of @rhombus(ohd) in the @rhombus(ocons) case).
 
-Lists and strings are not modelled themselves, but a predicate may
-refer to them through the measures @rhombus(length),
-@rhombus(string_length), @rhombus(is_empty) and @rhombus(is_cons).
+A predicate cannot refer to the elements of a list, string, or array, only
+to their lengths, through the measures @rhombus(length),
+@rhombus(string_length), @rhombus(array_length), @rhombus(is_empty), and
+@rhombus(is_cons).
 
 @// ------------------------------------------------------------
 @section(~tag: "bodies"){Checked Bodies}
@@ -358,24 +416,43 @@ A body is a sequence of (zero or more) local @rhombus(def)s followed by one
 result expression, and it may contain:
 
 @itemlist(
-  @item{integer, boolean and symbol literals, and identifiers;}
+  @item{integer, Boolean, symbol, and character literals, and identifiers;}
   @item{@rhombus(+), @rhombus(-), @rhombus(*), @rhombus(/), @rhombus(mod),
-    comparisons, @rhombus(&&), @rhombus(||) and @rhombus(!);}
-  @item{@rhombus(if), @rhombus(cond), @rhombus(match) and @rhombus(let);}
+    comparisons, @rhombus(&&), @rhombus(||), and @rhombus(!);}
+  @item{@rhombus(if), @rhombus(cond), @rhombus(match), and @rhombus(let);}
   @item{calls to this module's functions and constructors;}
+  @item{calls to functions defined inside the function, and to functions
+    passed to it as arguments; the checker knows only the type of the
+    result, not its value;}
   @item{the builtins @rhombus(max), @rhombus(min), @rhombus(add1),
-    @rhombus(sub1), @rhombus(is_even), @rhombus(is_odd), the list and
-    string measures, and @rhombus(cons);}
-  @item{@rhombus(error), @rhombus(unreachable) and @rhombus(assert) (@secref("reachability")).}
+    @rhombus(sub1), @rhombus(is_even), @rhombus(is_odd), the list,
+    string, and array measures, and @rhombus(cons), which the checker
+    models exactly;}
+  @item{options, pairs, and characters (@secref("options"));}
+  @item{@rhombus(make_array), @rhombus(Array), @rhombus(string_append),
+    @rhombus(substring), @rhombus(append), @rhombus(reverse),
+    @rhombus(map), @rhombus(filter), and @rhombus(rest), whose results'
+    lengths the checker knows (for @rhombus(filter), only that the
+    length is at most the input's);}
+  @item{any other Shplait builtin, and array indexing and assignment;
+    the checker knows only the type of the result, not its value;}
+  @item{@rhombus(error), @rhombus(unreachable), and @rhombus(assert) (@secref("reachability")).}
 )
 
 For instance, there is
 no @rhombus(abs); write @rhombus(max(n, -n)). A local @rhombus(def) may
 not shadow a parameter or an earlier local.
 
+A builtin such as @rhombus(first(l)) may be called, but nothing is known
+about its value. Builtins check their own arguments only when the program
+runs: @rhombus(string_get(s, i)) with an @rhombus(i) out of range is a
+run-time error, not a compile-time one. To have such a precondition
+checked, write a function that states it, like @rhombus(safe_get) above,
+and call that.
+
 
 @// ------------------------------------------------------------
-@section(~tag: "reachability"){@rhombus(error), @rhombus(unreachable) and @rhombus(assert)}
+@section(~tag: "reachability"){@rhombus(error), @rhombus(unreachable), and @rhombus(assert)}
 
 A call to @rhombus(error) never returns. Therefore, every claim about the result
 holds on every path that reaches one. This makes @rhombus(error) useful
@@ -552,7 +629,12 @@ predicate ::= integer | #true | #false | true | false
             | ( predicate )
             | if predicate | predicate | predicate
             | builtin(predicate, ...)       max min add1 sub1 is_even is_odd
-            | measure(identifier)           length string_length is_empty is_cons
+            | measure(identifier)           length string_length array_length
+                                            is_empty is_cons
+            | is_none(predicate) | is_some(predicate)
+            | fst(predicate) | snd(predicate)
+            | none() | some(predicate) | values(predicate, predicate)
+            | Char"c"                       a character, with == and != only
             | name(predicate, ...)          a measure fun of this module
             | ctor(predicate, ...)          a constructor of this module
             | unbox(identifier)             a Boxof parameter
@@ -589,14 +671,15 @@ time out.
 @itemlist(
   @item{Only integers: Shplait has no other numbers, so amounts of money,
     for instance, must be integers (e.g., represented as cents).}
-  @item{No refinements on @rhombus(Listof) or @rhombus(Mapof) elements. You can,
+  @item{No refinements on @rhombus(Listof), @rhombus(Optionof), or @rhombus(Mapof) elements. You can,
     however, write a custom datatype with refined fields, as in @rhombus(OList)
     above.}
   @item{No refinements on a definition inside another definition, on an
     anonymous @rhombus(fun) (a lambda), on a @rhombus(let), or in a function
     type.}
-  @item{No calls to functions outside the module, beyond the modelled
-    builtins.}
+  @item{No calls to functions from other modules. Shplait's builtins may
+    be called, but most of them only with their results unknown
+    (@secref("bodies")).}
   @item{No measures that look inside a list: e.g., ``the result has the same
     elements as the input'' cannot be stated.}
   @item{No refinements that are themselves parameters (abstract

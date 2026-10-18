@@ -49,7 +49,7 @@ check_rejects:
     f(v)
 
   apply_it(5, 10)
-  ~throws "refinement braces are only checked"
+  ~throws "refinements are allowed only on `fun` parameters and results"
 
 // 05_decimal_literal
 //

@@ -1,0 +1,51 @@
+#lang shplait/liquid
+
+// Statements in nested blocks: a local `def` or an `assert` inside an `if`
+// arm, a `cond` or `match` clause, or `block:`, holds on that path.
+fun safe_div(n :: Int, {d :: Int | d != 0}) :: Int:
+  n / d
+
+fun a(n :: Int) :: {r :: Int | r > n}:
+  block:
+    n + 1
+
+fun b(n :: Int) :: {r :: Int | r > n}:
+  if n > 0
+  | block:
+      def m = n + 1
+      m
+  | n + 1
+
+fun c(n :: Int) :: {r :: Int | r > n}:
+  if n > 0
+  | def m = n + 1
+    m
+  | n + 1
+
+fun d(l :: Listof(Int)) :: Int:
+  match l
+  | []: 0
+  | cons(h, t):
+      def k = h * h + 1
+      safe_div(10, k)
+
+fun e(n :: Int) :: Int:
+  if n > 0
+  | def k = n
+    safe_div(10, k)
+  | 0
+
+fun f(n :: Int) :: {r :: Int | r >= 0}:
+  cond
+  | n > 5:
+      def m = n - 5
+      assert(m > 0)
+      m
+  | ~else: 0
+
+fun g(n :: Int) :: Int:
+  if n > 0
+  | def k = n - 1
+    assert(k >= 0)
+    safe_div(10, k + 1)
+  | 0

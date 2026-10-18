@@ -10,10 +10,10 @@
 ;; and `def` wrappers (and the refinement-brace type form) in scope
 ;; before shplait's type checker sees anything.  Everything else is
 ;; plain shplait, plus the built-in functions of builtins.rhm
-;; (`unreachable`, `assert`).  Those are provided here, by the module
-;; language, rather than by the prelude: a program may define its own
-;; function of the same name, which shadows a module-language binding
-;; but would collide with an `open:` import.
+;; (`unreachable`, `assert`, `is_none`, `is_some`).  Those are provided
+;; here, by the module language, rather than by the prelude: a program
+;; may define its own function of the same name, which shadows a
+;; module-language binding but would collide with an `open:` import.
 
 (require shplait
          (only-in shplait

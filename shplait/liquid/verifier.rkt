@@ -51,7 +51,7 @@
 ;; sort is fixed by its use (a FLEXIBLE term, as for `error(...)`).
 ;;
 ;; Expression sub-language for predicates and checked bodies:
-;;   integer and boolean literals; identifiers (parameters, local
+;;   integer and Boolean literals; identifiers (parameters, local
 ;;   `def` bindings, `match` pattern variables); prefix `-` and `!`;
 ;;   + - * / and infix `mod` (`/` is shplait's TRUNCATING division and
 ;;   `mod` is shplait's sign-of-divisor modulo, both encoded
@@ -112,6 +112,11 @@
 (struct unsupported (why) #:transparent)
 (define (unsup why . args) (raise (unsupported (apply format why args))))
 
+;; A failure that a correct Liquid Shplait (and Shplait's type checker)
+;; never reaches: the message says it is a bug to report.
+(define (internal-error why . args)
+  (unsup "internal error in Liquid Shplait (please report it): ~a" (apply format why args)))
+
 ;; ======================================================================
 ;; Rhombus-value normalization
 ;; ======================================================================
@@ -132,13 +137,13 @@
      (for/list ([g (in-list gs)])
        (match g
          [(cons 'group ts) ts]
-         [_ (unsup "unrecognized program shape")]))]
+         [_ (internal-error "unrecognized program shape")]))]
     [(list 'group (cons 'block gs))
      (for/list ([g (in-list gs)])
-       (match g [(cons 'group ts) ts] [_ (unsup "unrecognized program shape")]))]
+       (match g [(cons 'group ts) ts] [_ (internal-error "unrecognized program shape")]))]
     [(cons 'block gs)
      (for/list ([g (in-list gs)])
-       (match g [(cons 'group ts) ts] [_ (unsup "unrecognized program shape")]))]
+       (match g [(cons 'group ts) ts] [_ (internal-error "unrecognized program shape")]))]
     [(cons 'group ts) (list ts)]
     [(? symbol? s) (list (list s))]
     [(? number? n) (list (list n))]
@@ -218,13 +223,14 @@
          (match (tl->list pr)
            [(list x pt)
             (define srt (base-sort (base->toks (stx-datum pt))))
-            (unless (and (sort-smt srt) (not (tvar-sort? srt)))
-              (unsup "a measure's parameter `~a` has type ~a, which the checker does not model"
+            (unless (and (sort-smt srt) (not (sort-has-tvar? srt)))
+              (unsup "a measure's parameter `~a` cannot have type ~a (see Measure Functions in the guide)"
                      (id-sym x) (base-name (base->toks (stx-datum pt)))))
             (cons (id-sym x) srt)])))
      (define rsort (base-sort (base->toks (stx-datum rt))))
-     (unless (and (sort-smt rsort) (not (tvar-sort? rsort)))
-       (unsup "a measure must return `Int`, `Boolean`, `Symbol` or a datatype declared in this module"))
+     (unless (and (sort-smt rsort) (not (sort-has-tvar? rsort)))
+       (unsup "a measure cannot return a value of type ~a (see Measure Functions in the guide)"
+              (base-name (base->toks (stx-datum rt)))))
      (define groups (stx->groups body))
      (unless (= (length groups) 1)
        (unsup "a measure's body must be a single `match` on a datatype parameter"))
@@ -334,9 +340,11 @@
 ;; Base types -> sorts
 ;; ======================================================================
 
-;; 'int, 'bool, 'sym, (list 'data T) for a datatype of this module,
+;; 'int, 'bool, 'sym, 'char, (list 'data T) for a datatype of this
+;; module, (list 'opt S) for `Optionof`, (list 'pair A B) for a pair,
 ;; (list 'tvar a) for a type variable `?a`, or 'opaque (a value the
-;; checker does not model).
+;; checker does not model).  An option's or a pair's component may be
+;; 'opaque: the SMT sort `Opaque`.
 ;;
 ;; A type variable is an uninterpreted SMT sort inside the function
 ;; that declares it: values of it can only be compared with `==` and
@@ -349,26 +357,78 @@
     [(list 'Int) 'int]
     [(list 'Boolean) 'bool]
     [(list 'Symbol) 'sym]
+    [(list 'Char) 'char]
     [(list (? symbol? n)) #:when (hash-ref (current-type-table) n #f) (list 'data n)]
     [(list (list 'op '?) (? symbol? a)) (list 'tvar a)]
-    [_ 'opaque]))
+    [(list 'Optionof (list 'parens (cons 'group inner))) (list 'opt (base-sort inner))]
+    [(list (list 'parens (cons 'group inner))) (base-sort inner)]
+    [_
+     ;; `A * B`: a pair (other tuple sizes are not modeled)
+     (define parts (split-type-at-star ts))
+     (if (and parts (= (length parts) 2))
+         (list 'pair (base-sort (first parts)) (base-sort (second parts)))
+         'opaque)]))
 
-;; The type variable a base type consists of (`?a` -> 'a), else #f.
-(define (type-var-of ts)
-  (match ts
-    [(list (list 'op '?) (? symbol? a)) a]
-    [_ #f]))
+;; A type's tokens split at its top-level `*`s, or #f when it has none
+;; or is a function type.
+(define (split-type-at-star ts)
+  (cond
+    [(member '(op ->) ts) #f]
+    [(not (member '(op *) ts)) #f]
+    [else
+     (let loop ([ts ts] [cur '()] [acc '()])
+       (cond
+         [(null? ts) (reverse (cons (reverse cur) acc))]
+         [(equal? (car ts) '(op *)) (loop (cdr ts) '() (cons (reverse cur) acc))]
+         [else (loop (cdr ts) (cons (car ts) cur) acc)]))]))
+
 
 (define (data-sort? s) (and (pair? s) (eq? (car s) 'data)))
 (define (tvar-sort? s) (and (pair? s) (eq? (car s) 'tvar)))
+(define (opt-sort? s) (and (pair? s) (eq? (car s) 'opt)))
+(define (pair-sort? s) (and (pair? s) (eq? (car s) 'pair)))
+
+;; Whether a type variable occurs in a sort.
+(define (sort-has-tvar? s)
+  (cond [(tvar-sort? s) #t]
+        [(opt-sort? s) (sort-has-tvar? (cadr s))]
+        [(pair-sort? s) (or (sort-has-tvar? (cadr s)) (sort-has-tvar? (caddr s)))]
+        [else #f]))
+
+;; Bind the type variables of `pat` (a callee's parameter sort) so that
+;; it is `actual` (an argument's sort), extending `h`; #f if they
+;; cannot match.  An unmodeled argument matches anything, binding
+;; nothing.
+(define (sort-match pat actual h)
+  (cond
+    [(not h) #f]
+    [(tvar-sort? pat)
+     (define a (cadr pat))
+     (cond [(hash-ref h a #f) => (lambda (b) (and (equal? b actual) h))]
+           [else (hash-set h a actual)])]
+    [(and (opt-sort? pat) (opt-sort? actual)) (sort-match (cadr pat) (cadr actual) h)]
+    [(and (pair-sort? pat) (pair-sort? actual))
+     (sort-match (caddr pat) (caddr actual) (sort-match (cadr pat) (cadr actual) h))]
+    [else h]))
+
+;; `s` with its type variables replaced by their bindings in `h`; #f if
+;; one is unbound.
+(define (sort-subst s h)
+  (cond
+    [(tvar-sort? s) (hash-ref h (cadr s) #f)]
+    [(opt-sort? s) (let ([e (sort-subst (cadr s) h)]) (and e (list 'opt e)))]
+    [(pair-sort? s)
+     (let ([a (sort-subst (cadr s) h)] [b (sort-subst (caddr s) h)])
+       (and a b (list 'pair a b)))]
+    [else s]))
 (define (t-of smt sort [src #f]) (T smt sort (hash) src))
 
 ;; The sort of a datatype field.  A field whose type is a type variable
 ;; belongs to a polymorphic datatype, which is declared to the solver
-;; with its fields unmodelled.
+;; with its fields unmodeled.
 (define (field-sort f)
   (define s (base-sort (dfield-base f)))
-  (if (tvar-sort? s) 'opaque s))
+  (if (sort-has-tvar? s) 'opaque s))
 
 (define (base-name ts)
   (if (null? ts) "an inferred type" (format "`~a`" (render-toks ts))))
@@ -377,9 +437,15 @@
   (cond [(eq? s 'int) "Int"]
         [(eq? s 'bool) "Bool"]
         [(eq? s 'sym) "Int"]                     ; symbols: distinct integer codes
+        [(eq? s 'char) "Int"]                    ; characters: code points
         [(data-sort? s) (symbol->string (cadr s))]
         [(tvar-sort? s) (format "%tv_~a" (cadr s))]
+        [(opt-sort? s) (format "(%Option ~a)" (component-smt (cadr s)))]
+        [(pair-sort? s) (format "(%Pair ~a ~a)" (component-smt (cadr s)) (component-smt (caddr s)))]
         [else #f]))
+
+;; The SMT sort of an option's or a pair's component.
+(define (component-smt s) (or (sort-smt s) "Opaque"))
 
 ;; Boxof(T) -> the tokens of T, else #f.
 (define (box-element-base ts)
@@ -408,6 +474,9 @@
 ;; checker cannot translate: using it reports why.
 (struct failed-local (why) #:transparent)
 
+;; Likewise a `def` inside a nested block.
+(struct failed-def (why) #:transparent)
+
 ;; `let x = rhs: ...`: the environment for the body.  `x` stands for a
 ;; constant equal to `rhs`, named after `x` for counterexamples.  The
 ;; constant goes where the rhs's own lines go (the current extras), so
@@ -435,7 +504,7 @@
      (note-const-sort! const (T-sort t))
      (assume-invariant! t push-extra!)
      (hash-set env x (T const (T-sort t) (T-measures t) (string->symbol const)))]
-    ;; unmodelled or flexible: the term itself (measures, identity kept)
+    ;; unmodeled or flexible: the term itself (measures, identity kept)
     [else (hash-set env x t)]))
 
 ;; In an environment, a function defined inside the one being checked.
@@ -444,8 +513,7 @@
 (struct local-function () #:transparent)
 
 (define (local-function-message name)
-  (format "`~a` is a function defined inside another definition (or a function value); the checker does not follow calls to it, so nothing is known about its result (refinements are checked only on functions defined at the top level of the module)"
-          name))
+  (format "`~a` is a local function and cannot be used as a value" name))
 
 ;; A function definition among the tokens: `fun NAME(params) ...: body`
 ;; or an anonymous `fun (params) ...: body`.
@@ -501,19 +569,22 @@
 (define (sort-word s)
   (cond
     [(eq? s 'int) "an integer"]
-    [(eq? s 'bool) "a boolean"]
+    [(eq? s 'bool) "a Boolean"]
     [(eq? s 'sym) "a symbol"]
+    [(eq? s 'char) "a character"]
     [(data-sort? s) (format "a value of type `~a`" (cadr s))]
+    [(opt-sort? s) "an option"]
+    [(pair-sort? s) "a pair"]
     [(tvar-sort? s) (format "a value of the type variable `?~a`" (cadr s))]
     [(flexible? s) "a value of a type not yet known"]
-    [else "a value of a type the checker does not model (such as a list or a string)"]))
+    [else "a value of another type"]))
 
-;; Like `sort-word`, naming the declared type of an unmodelled value
+;; Like `sort-word`, naming the declared type of an unmodeled value
 ;; when the term knows it.
 (define (term-word t)
   (cond
     [(and (eq? (T-sort t) 'opaque) (hash-ref (T-measures t) '%type #f))
-     => (lambda (ts) (format "a value of type ~a, which the checker does not model" (base-name ts)))]
+     => (lambda (ts) (format "a value of type ~a" (base-name ts)))]
     [else (sort-word (T-sort t))]))
 
 (define (need-sort t0 want who)
@@ -551,7 +622,14 @@
 ;; A maker for a fresh value named after `base`.  Its declaration (and
 ;; `assume!`'s facts about it) go to the function-level prefix: the
 ;; term may be used by obligations other than the one that resolved it.
-(define ((fresh-value-maker base [assume! void]) want)
+(define (fresh-value-maker base [assume! void])
+  ;; the value's facts hold where it is made, not where its sort is fixed
+  (define g (fact-guard))
+  (lambda (want)
+    (parameterize ([current-guard-override g])
+      (make-fresh-value base assume! want))))
+
+(define (make-fresh-value base assume! want)
   (define const (fresh-name base))
   (cond
     [(sort-smt want)
@@ -563,6 +641,16 @@
        (assume! t)
        t)]
     [else (T #f 'opaque (hash) (string->symbol const))]))
+
+;; A term flowing into a declared type (a result, an argument): a
+;; flexible one takes that type, when the checker models it.  In a
+;; caller, the callee's type variables mean nothing, so a type that
+;; mentions one is left alone.
+(define (at-declared t type-toks #:in-caller? [in-caller? #f])
+  (define s (base-sort type-toks))
+  (if (and (flex? t) (sort-smt s) (not (and in-caller? (sort-has-tvar? s))))
+      (at-sort t s)
+      t))
 
 ;; Two terms that must have one sort (the arms of an `if`, the sides of
 ;; `==`): a flexible one takes the other's sort.
@@ -603,6 +691,38 @@
 (define (with-guard g thunk)
   (parameterize ([current-reach-guard (conj (current-reach-guard) g)])
     (thunk)))
+
+;; ----------------------------------------------------------------------
+;; Assumptions hold only where the code that justifies them runs
+;;
+;; A callee's return claim holds of a call's result only on a path that
+;; makes the call; a datatype invariant or a field refinement holds of a
+;; value only where the value exists.  Such a claim can be false for
+;; some arguments (a function that raises an error on them may promise
+;; anything about the ones it returns on), so an assumption made where
+;; the facts of every obligation of the function go must be guarded by
+;; the condition under which it is made.  `current-path` is that
+;; condition relative to the start of the function (or of the
+;; obligation, whose own path conditions are part of it): the branch,
+;; `match` clause or `cond` clause being translated, and the path
+;; conditions of a call being checked.  `current-reach-guard` adds the
+;; position inside an expression.
+(define current-path (make-parameter "true"))
+(define current-guard-override (make-parameter #f))
+
+(define (at-path g thunk)
+  (parameterize ([current-path (conj (current-path) g)])
+    (thunk)))
+
+(define (fact-guard)
+  (or (current-guard-override) (conj (current-path) (current-reach-guard))))
+
+;; "(assert P)", guarded by where it is assumed.
+(define (guarded-assert p)
+  (define g (fact-guard))
+  (if (equal? g "true")
+      (format "(assert ~a)" p)
+      (format "(assert (=> ~a ~a))" g p)))
 
 ;; Run `thunk` collecting divergence; -> (values result condition),
 ;; where condition is what must hold for the evaluation to return.
@@ -659,8 +779,7 @@
      (unless (equal? (T-sort a) (T-sort b))
        (unsup "`~a` compares ~a with ~a" op (term-word a) (term-word b)))
      (when (eq? (T-sort a) 'opaque)
-       (unsup "`~a` is not checked on this type; compare integers or booleans, or use `is_empty`/`length` for lists"
-              op))
+       (unsup "`~a` is not supported on ~a" op (term-word a)))
      (t-bool (format "(~a ~a ~a)" smt (T-smt a) (T-smt b)))]
     [else
      (define who (format "operator `~a`" op))
@@ -676,6 +795,9 @@
   (string-join
    (list
     "(declare-sort Opaque 0)"
+    "(declare-datatypes (T) ((%Option (%none) (%some (%some_val T)))))"
+    "(declare-datatypes (A B) ((%Pair (%pair (%fst A) (%snd B)))))"
+    "(define-fun char_ok ((c Int)) Bool (and (>= c 0) (<= c 1114111) (not (and (>= c 55296) (<= c 57343)))))"
     "(define-fun tdiv ((a Int) (b Int)) Int (ite (>= a 0) (div a b) (- (div (- a) b))))"
     "(define-fun tmod ((a Int) (b Int)) Int (ite (or (> b 0) (= (mod a b) 0)) (mod a b) (+ (mod a b) b)))")
    "\n"))
@@ -739,14 +861,41 @@
 
 (define builtin-arity
   (hash 'max 2 'min 2 'add1 1 'sub1 1 'is_even 1 'is_odd 1
-        'length 1 'string_length 1 'is_empty 1 'is_cons 1 'cons 2))
+        'length 1 'string_length 1 'array_length 1 'is_empty 1 'is_cons 1 'cons 2
+        ;; built-ins whose result's size the checker knows
+        'make_array 2 'string_append 2 'substring 3 'append 2 'reverse 1
+        'map 2 'filter 2 'rest 1))
 
-(define builtin-names-text
-  "`max`, `min`, `add1`, `sub1`, `is_even`, `is_odd`, `length`, `string_length`, `is_empty`, `is_cons`, `cons`, `error`, `unreachable`, `assert`")
 
 (define (builtin? name) (hash-ref builtin-arity name #f))
 
-;; Exactly-encodable integer/boolean builtins.
+;; Shplait's other built-in functions.  The checker does not model them,
+;; and a call to one may appear in checked code: nothing is known about
+;; its result except its type, as for a module function with no return
+;; refinement, and nothing is checked about its arguments (their
+;; preconditions, if any, are checked when the program runs).  The box
+;; operations are not here: their use is restricted (see Box usage
+;; discipline).
+(define unmodeled-builtins
+  '(first list_get foldl foldr member map2
+    string_get string_to_symbol to_string
+    map_get map_get_k map_set map_update map_remove map_delete map_keys
+    print println
+    boolean_to_syntax integer_to_syntax list_to_alts_syntax list_to_block_syntax
+    list_to_braces_syntax list_to_group_syntax list_to_groups_syntax
+    list_to_parens_syntax list_to_quotes_syntax list_to_syntax replace_scopes
+    string_to_keyword_syntax string_to_operator_syntax string_to_syntax
+    symbol_to_syntax syntax_alts_to_list syntax_block_to_list syntax_braces_to_list
+    syntax_generate_temporary syntax_group_to_list syntax_groups_to_list
+    syntax_is_alts syntax_is_block syntax_is_boolean syntax_is_braces
+    syntax_is_integer syntax_is_keyword syntax_is_list syntax_is_operator
+    syntax_is_parens syntax_is_quotes syntax_is_string syntax_is_symbol
+    syntax_join syntax_keyword_to_string syntax_operator_to_string
+    syntax_parens_to_list syntax_quotes_to_list syntax_read syntax_split
+    syntax_to_boolean syntax_to_integer syntax_to_list syntax_to_string
+    syntax_to_symbol))
+
+;; Exactly-encodable integer/Boolean builtins.
 (define (builtin-exact name args)
   (define (i k who) (int-of (list-ref args k) who))
   (case name
@@ -762,11 +911,26 @@
 
 ;; The measure of a value: an explicit measure when the term carries
 ;; one, otherwise a non-negative constant cached per source name.
+;; The type a measure applies to, as the head of its declared type.
+(define measure-domains
+  (hash 'length '(Listof "a list")
+        'string_length '(String "a string")
+        'array_length '(Arrayof "an array")))
+
 (define (measure-of t0 mname)
-  ;; a flexible value measured is a list or a string: unmodelled
+  ;; a flexible value measured is a list or a string: unmodeled
   (define t (at-sort t0 'opaque))
+  (unless (eq? (T-sort t) 'opaque)
+    (unsup "`~a` applies to ~a, but was given ~a"
+           mname (second (hash-ref measure-domains mname '(#f "a list or a string")))
+           (term-word t)))
+  (let ([dom (hash-ref measure-domains mname #f)]
+        [ts (hash-ref (T-measures t) '%type #f)])
+    (when (and dom ts (pair? ts) (not (eq? (car ts) (car dom))))
+      (unsup "`~a` applies to ~a, but was given a value of type ~a"
+             mname (second dom) (base-name ts))))
   (when (current-in-measure)
-    (unsup "`~a` cannot be used inside a measure; a measure may only use its constructor's fields, arithmetic, and other measures" mname))
+    (unsup "a measure may not use `~a` (see Measure Functions in the guide)" mname))
   (cond
     [(hash-ref (T-measures t) mname #f) => values]
     [(T-src t)
@@ -798,7 +962,53 @@
          (define tail-len
            (with-handlers ([unsupported? (lambda (e) #f)]) (measure-of tail 'length)))
          (t-opaque (hash 'length (if tail-len (format "(+ 1 ~a)" tail-len) "1")) #f)]
-        [else (unsup "`~a` is not one of the builtins the checker models" name)])))
+        [(array_length) (t-int (measure-of (first arg-terms) 'array_length))]
+        ;; Sizes of results.  A size that would be negative belongs to a
+        ;; call that raises an error instead of returning, so any value
+        ;; is right there; the size is kept non-negative.
+        [(make_array)
+         (sized 'array_length '(Arrayof) (nonneg (int-of (first arg-terms) "`make_array`")))]
+        [(string_append)
+         (sized 'string_length '(String)
+                (sum-of (try-measure (first arg-terms) 'string_length)
+                        (try-measure (second arg-terms) 'string_length)))]
+        [(substring)
+         (sized 'string_length '(String)
+                (nonneg (format "(- ~a ~a)" (int-of (third arg-terms) "`substring`")
+                                (int-of (second arg-terms) "`substring`"))))]
+        [(append)
+         (sized 'length '(Listof)
+                (sum-of (try-measure (first arg-terms) 'length)
+                        (try-measure (second arg-terms) 'length)))]
+        [(reverse map)
+         (sized 'length '(Listof) (try-measure (last arg-terms) 'length))]
+        [(rest)
+         (define len (try-measure (first arg-terms) 'length))
+         (sized 'length '(Listof) (and len (nonneg (format "(- ~a 1)" len))))]
+        [(filter)
+         (define len (try-measure (second arg-terms) 'length))
+         (define const (fresh-name "length_of_filter_result"))
+         (push-extra! (format "(declare-const ~a Int)" const))
+         (push-extra! (format "(assert (>= ~a 0))" const))
+         (when len (push-extra! (format "(assert (<= ~a ~a))" const len)))
+         (sized 'length '(Listof) const)]
+        [else (internal-error "`~a` is not a builtin the checker knows" name)])))
+
+;; The measure of a value, or #f when the checker cannot determine it.
+(define (try-measure t mname)
+  (and t (with-handlers ([unsupported? (lambda (e) #f)]) (measure-of t mname))))
+
+(define (sum-of a b) (and a b (format "(+ ~a ~a)" a b)))
+(define (nonneg x) (format "(ite (>= ~a 0) ~a 0)" x x))
+
+;; An unmodeled value of a type whose head is `type-head`, with its
+;; size known (an SMT term) or unknown (#f).
+(define (sized mname type-head size)
+  (define src (string->symbol (fresh-name "builtin_result")))
+  (T #f 'opaque
+     (let ([h (hash '%type type-head)])
+       (if size (hash-set h mname size) h))
+     src))
 
 ;; ======================================================================
 ;; Expression translation
@@ -858,7 +1068,7 @@
        ;; ---- literals
        [(number? head)
         (unless (exact-integer? head)
-          (unsup "`~a` is not an integer; shplait has no fractional numbers, so refinements are over integers (model money as cents)"
+          (unsup "`~a` is not an integer"
                  head))
         (values (t-int (if (negative? head)
                            (format "(- ~a)" (- head))
@@ -868,6 +1078,9 @@
         (values (t-opaque (hash 'string_length (number->string (string-length head))) #f)
                 rest)]
        [(memq head '(#t #true true)) (values (t-bool "true") rest)]
+       ;; ---- character literal Char"x"
+       [(and (eq? head 'Char) (pair? rest) (string? (car rest)) (= (string-length (car rest)) 1))
+        (values (t-of (number->string (char->integer (string-ref (car rest) 0))) 'char) (cdr rest))]
        ;; ---- symbol literal #'name
        [(and (equal? head (list 'op '|#'|)) (pair? rest) (symbol? (car rest)))
         (values (t-of (number->string (symbol-code (car rest))) 'sym) (cdr rest))]
@@ -887,12 +1100,12 @@
         (match (parens-groups next-parens)
           [(list (list (? symbol? box-name)))
            (values (unbox-term box-name) (cdr rest))]
-          [_ (unsup "`unbox` is checked only on a `Boxof` parameter named directly")])]
+          [_ (unsup "`unbox` must be applied to a `Boxof` parameter")])]
        ;; ---- box(e) / set_box are not expressions the checker uses
        [(and (eq? head 'box) next-parens)
-        (unsup "a `box(...)` expression is checked only as an argument in a `Boxof` parameter position")]
+        (unsup "`box(...)` is allowed only as the argument for a `Boxof` parameter")]
        [(and (eq? head 'set_box) next-parens)
-        (unsup "`set_box` is a statement; the checker cannot use its result as a value")]
+        (unsup "`set_box(...)` cannot be used as a value")]
        ;; ---- `if c | a | b` as an expression: an ite term.  This is
        ;; what lets a predicate say `y == (if a > b | a | b)`.
        [(eq? head 'if)
@@ -908,9 +1121,22 @@
                          (with-guard (negate c) (lambda () (expr->term else-toks env)))))
            (define (ite-at a b)
              (define sort (T-sort a))
-             (unless (and (sort-smt sort) (equal? sort (T-sort b)))
-               (unsup "the two arms of this `if` must have the same modelled type (integer, boolean, or a datatype) for the checker to model it"))
-             (T (format "(ite ~a ~a ~a)" c (T-smt a) (T-smt b)) sort (hash) #f))
+             (cond
+               [(and (sort-smt sort) (equal? sort (T-sort b)))
+                (T (format "(ite ~a ~a ~a)" c (T-smt a) (T-smt b)) sort (hash) #f)]
+               ;; arms the checker does not model (strings, lists): a
+               ;; value whose measures are those of the arm taken
+               [(and (eq? sort 'opaque) (eq? (T-sort b) 'opaque))
+                (define ms
+                  (for*/hash ([m (in-list '(length string_length array_length))]
+                              [x (in-value (try-measure a m))]
+                              [y (in-value (try-measure b m))]
+                              #:when (and x y))
+                    (values m (format "(ite ~a ~a ~a)" c x y))))
+                (define ty (or (hash-ref (T-measures a) '%type #f) (hash-ref (T-measures b) '%type #f)))
+                (T #f 'opaque (if ty (hash-set ms '%type ty) ms) (string->symbol (fresh-name "if_value")))]
+               [else
+                (internal-error "the arms of this `if` have different types, which Shplait's type checker should have rejected")]))
            (values (if (and (flex? a) (flex? b))
                        ;; neither arm returns, or both are of a type only
                        ;; the context determines
@@ -918,6 +1144,9 @@
                        (ite-at a b))
                    after)]
           [_ (unsup "`if` without exactly two `|` alternatives")])]
+       ;; ---- `block:` as an expression, without statements
+       [(and (eq? head 'block) (pair? rest) (pair? (car rest)) (eq? (caar rest) 'block))
+        (values (expr->term (block-result-toks (car rest)) env) (cdr rest))]
        ;; ---- `let x = rhs: body` as an expression; its block ends the
        ;; token list
        [(and (eq? head 'let) (let-values ([(x r b) (split-let toks)]) x))
@@ -925,10 +1154,20 @@
         (values (expr->term (block-result-toks blk) (bind-let x rhs env)) '())]
        ;; ---- an anonymous function as a value
        [(and (eq? head 'fun) next-parens)
-        (unsup "a function value (an anonymous `fun`) is not something the checker models, so a claim cannot depend on one")]
+        (unsup "an anonymous `fun` cannot be used as a value here")]
        ;; ---- calls
        [(and (symbol? head) next-parens)
         (parse-call head (parens-groups next-parens) (cdr rest) env)]
+       ;; ---- array indexing `a[i]`: an element about which nothing
+       ;; is known; `a[i] := v` assigns, and has no value the checker
+       ;; uses.  Calls inside the index and the value are found by the
+       ;; call scan.
+       [(and (symbol? head) (pair? rest) (pair? (car rest)) (eq? (caar rest) 'brackets))
+        (match (cdr rest)
+          [(cons '(op :=) _)
+           (values (t-opaque-typed '(Void) #f) '())]
+          [after
+           (values (flex-term (fresh-value-maker (format "~a_element" head))) after)])]
        ;; ---- identifiers
        [(symbol? head)
         (cond
@@ -938,8 +1177,10 @@
                   (unsup "~a" (local-function-message head)))
                 (when (failed-local? v)
                   (unsup "`let`-bound `~a` cannot be checked: ~a" head (failed-local-why v)))
+                (when (failed-def? v)
+                  (unsup "local definition `~a` cannot be checked: ~a" head (failed-def-why v)))
                 (when (untranslated? v)
-                  (unsup "this refinement depends on ~a (`~a`), which the checker cannot analyze: ~a"
+                  (unsup "this refinement depends on ~a (`~a`), which cannot be analyzed: ~a"
                          (let ([pos (untranslated-position v)])
                            (if (symbol? pos) (format "field `~a`" pos) (format "argument ~a" pos)))
                          (render-toks (untranslated-toks v))
@@ -962,9 +1203,9 @@
                    (for-each push-prefix! (top-const-lines c))
                    (values (top-const-term c) rest)]))]
           [(set-member? (current-top-def-names) head)
-           (unsup "top-level `~a` cannot be checked: it is not a `def` the checker can analyze" head)]
+           (unsup "top-level `~a` cannot be analyzed" head)]
           [else
-           (unsup "identifier `~a` is not a parameter, a local `def`, or a pattern variable of this function"
+           (unsup "`~a` is not a parameter, local definition, or pattern variable"
                   head)])]
        ;; ---- grouping and rejects
        [(and (pair? head) (eq? (car head) 'parens))
@@ -991,7 +1232,7 @@
     [else
      (define elem-sort (base-sort (param-base p)))
      (unless (sort-smt elem-sort)
-       (unsup "`unbox(~a)` has type ~a, which the checker does not model"
+       (unsup "the contents of `~a`, of type ~a, cannot be used in a claim"
               box-name (base-name (param-base p))))
      (define const (fresh-name (format "~a_content" box-name)))
      (push-prefix! (format "(declare-const ~a ~a)" const (sort-smt elem-sort)))
@@ -1005,7 +1246,8 @@
      (when cache (hash-set! cache box-name t))
      t]))
 
-(define predicate-callables '(max min add1 sub1 is_even is_odd length string_length is_empty is_cons))
+(define predicate-callables '(max min add1 sub1 is_even is_odd length string_length array_length is_empty is_cons
+                              some none values fst snd is_some is_none))
 
 ;; A constructor application.  When every field's argument has an SMT
 ;; term the value is the constructor term itself; otherwise it is a
@@ -1029,13 +1271,127 @@
            sort)]
     [else
      (when (current-in-measure)
-       (unsup "in a measure, every field of `~a(...)` must be an expression the checker models" ctor))
+       (unsup "a measure cannot build `~a(...)` from these arguments" ctor))
      (define const (fresh-name (format "~a_value" ctor)))
      (push-extra! (format "(declare-const ~a ~a)" const tname))
      (push-extra! (format "(assert ((_ is ~a) ~a))" ctor const))
      (for ([a (in-list args)] [f (in-list fields)] #:when a)
        (push-extra! (format "(assert (= (~a_~a ~a) ~a))" ctor (dfield-name f) const a)))
      (t-of const sort (string->symbol const))]))
+
+;; ----------------------------------------------------------------------
+;; Options and pairs: `(%Option S)` and `(%Pair A B)` (see `preamble`).
+;; Their constructors are written with their sorts, `(as %some S)`: z3
+;; finds them ambiguous once a module datatype nests one.
+;; A component the checker cannot translate is unknown: in a body, the
+;; value is still known to be a `some` (or a pair); in a predicate, it
+;; is an error.
+
+(define (none-at want)
+  (unless (opt-sort? want)
+    (unsup "`none()` is used where ~a is needed" (sort-word want)))
+  (t-of (format "(as %none ~a)" (sort-smt want)) want))
+
+;; A fresh constant of sort `sort`, with `facts` (a function of its
+;; name, giving SMT assertions) assumed.
+(define (fresh-of base sort facts)
+  (define const (fresh-name base))
+  (push-extra! (format "(declare-const ~a ~a)" const (component-smt sort)))
+  (note-const-sort! const sort)
+  (for ([f (in-list (facts const))]) (push-extra! (format "(assert ~a)" f)))
+  (define t (if (sort-smt sort) (t-of const sort (string->symbol const)) (T const 'opaque (hash) (string->symbol const))))
+  (assume-invariant! t push-extra!)
+  t)
+
+;; The SMT term of `t` as a component of sort `s`, or #f.
+(define (component-term t s)
+  (and t (T-smt t) (equal? (T-sort t) s) (T-smt t)))
+
+(define (some-of t s)
+  (define sort (list 'opt s))
+  (define v (component-term t s))
+  (if v
+      (t-of (format "((as %some ~a) ~a)" (sort-smt sort) v) sort)
+      (fresh-of "some_value" sort
+                (lambda (c) (list (format "(not (= ~a (as %none ~a)))" c (sort-smt sort)))))))
+
+(define (pair-of ta tb a b)
+  (define sort (list 'pair a b))
+  (define x (component-term ta a))
+  (define y (component-term tb b))
+  (if (and x y)
+      (t-of (format "((as %pair ~a) ~a ~a)" (sort-smt sort) x y) sort)
+      (fresh-of "values_value" sort
+                (lambda (c)
+                  (append (if x (list (format "(= (%fst ~a) ~a)" c x)) '())
+                          (if y (list (format "(= (%snd ~a) ~a)" c y)) '()))))))
+
+;; The sort of a term standing for a component: an unknown one is
+;; unmodeled.
+(define (component-sort t) (if t (T-sort t) 'opaque))
+
+;; A component of a pair term: `which` is 'fst or 'snd.  An unmodeled
+;; component is a constant named after `base`, equal to it.
+(define (pair-select which t base)
+  (define s (if (eq? which 'fst) (cadr (T-sort t)) (caddr (T-sort t))))
+  (define sel (format "(%~a ~a)" which (T-smt t)))
+  (if (sort-smt s)
+      (let ([r (t-of sel s)]) (assume-invariant! r push-extra!) r)
+      (fresh-of base s (lambda (c) (list (format "(= ~a ~a)" c sel))))))
+
+(define (option-pair-call head gs env)
+  (define (term g)
+    (if (current-allow-calls)
+        (with-handlers ([unsupported? (lambda (e) #f)]) (expr->term g env))
+        (expr->term g env)))
+  (define (unknown) (flex-term (fresh-value-maker (format "~a_result" head))))
+  (define (n-args n)
+    (unless (= (length gs) n)
+      (unsup "`~a` takes ~a argument(s), got ~a" head n (length gs))))
+  (case head
+    [(none) (n-args 0) (flex-term none-at)]
+    [(some)
+     (n-args 1)
+     (define t (term (first gs)))
+     (if (and t (flex? t))
+         (flex-term (lambda (want)
+                      (unless (opt-sort? want)
+                        (unsup "`some(...)` is used where ~a is needed" (sort-word want)))
+                      (some-of (at-sort t (cadr want)) (cadr want))))
+         (some-of t (component-sort t)))]
+    [(values)
+     (cond
+       [(= (length gs) 2)
+        (define ta (term (first gs)))
+        (define tb (term (second gs)))
+        (if (or (and ta (flex? ta)) (and tb (flex? tb)))
+            (flex-term (lambda (want)
+                         (unless (pair-sort? want)
+                           (unsup "`values(...)` is used where ~a is needed" (sort-word want)))
+                         (pair-of (and ta (at-sort ta (cadr want))) (and tb (at-sort tb (caddr want)))
+                                  (cadr want) (caddr want))))
+            (pair-of ta tb (component-sort ta) (component-sort tb)))]
+       ;; a tuple of another size: not modeled
+       [else (unknown)])]
+    [(fst snd)
+     (n-args 1)
+     (define t (term (first gs)))
+     (cond
+       [(and t (not (flex? t)) (pair-sort? (T-sort t)))
+        (pair-select head t (format "~a_result" head))]
+       [(not (current-allow-calls))
+        (unsup "`~a` needs a pair but got ~a" head (if t (term-word t) "something the checker cannot analyze"))]
+       [else (unknown)])]
+    [(is_some is_none)
+     (n-args 1)
+     (define t (term (first gs)))
+     (cond
+       [(and t (not (flex? t)) (opt-sort? (T-sort t)))
+        (define none? (format "(= ~a (as %none ~a))" (T-smt t) (sort-smt (T-sort t))))
+        (t-bool (if (eq? head 'is_none) none? (format "(not ~a)" none?)))]
+       [(not (current-allow-calls))
+        (unsup "`~a` needs an option but got ~a" head (if t (term-word t) "something the checker cannot analyze"))]
+       [else (unknown)])]))
 
 ;; The term for an actual argument, or, when the checker cannot
 ;; translate it, an `untranslated` record of why.
@@ -1049,28 +1405,37 @@
 (define (sibling-env fields actuals j env)
   (for/fold ([e (hash)]) ([a (in-list actuals)] [f (in-list fields)] [k (in-naturals 1)]
                           #:unless (= k j))
-    (hash-set e (dfield-name f) (actual-or-untranslated a (dfield-name f) env))))
+    (define t (actual-or-untranslated a (dfield-name f) env))
+    (hash-set e (dfield-name f) (if (T? t) (at-declared t (dfield-base f) #:in-caller? #t) t))))
 
 (define (parse-call head arg-groups rest env)
   ;; A name bound locally (a parameter, a `let`, a function defined
   ;; inside this one) is not the top-level function it may share its
   ;; name with: lexically it is the local binding, a function value the
-  ;; checker does not follow.
-  (when (hash-ref env head #f)
-    (unsup "~a" (local-function-message head)))
-  (define callee (hash-ref (current-sig-table) head #f))
-  (define msr (hash-ref (current-measure-table) head #f))
-  ;; Inside a predicate only the modelled builtins and this module's
+  ;; checker does not follow.  In a body its result is a value of its
+  ;; type about which nothing else is known, as for an unmodeled
+  ;; builtin; a predicate may not call it.
+  (let ([v (hash-ref env head #f)])
+    (when (failed-def? v)
+      (unsup "local definition `~a` cannot be checked: ~a" head (failed-def-why v))))
+  (define local? (or (and (hash-ref env head #f) #t)
+                     (hash-has-key? (current-failed-locals) head)))
+  (define callee (and (not local?) (hash-ref (current-sig-table) head #f)))
+  (define msr (and (not local?) (hash-ref (current-measure-table) head #f)))
+  ;; Inside a predicate only the modeled builtins and this module's
   ;; measures may be called; a module function of the same name as a
   ;; builtin shadows it, so it is refused too rather than silently
   ;; read as the builtin.
   (unless (current-allow-calls)
-    (unless (or msr
-                (hash-ref (current-ctor-table) head #f)
-                (and (memq head predicate-callables) (not callee)))
-      (unsup "a refinement predicate may not call `~a`: the only calls allowed in a predicate are the builtins `max`, `min`, `add1`, `sub1`, `is_even`, `is_odd`, the measures `length`, `string_length`, `is_empty`, `is_cons`, and this module's `measure fun`s"
+    (unless (and (not local?)
+                 (or msr
+                     (hash-ref (current-ctor-table) head #f)
+                     (and (memq head predicate-callables) (not callee))))
+      (unsup "a predicate may not call `~a` (see The Predicate Language in the guide)"
              head)))
   (cond
+    [local?
+     (values (flex-term (fresh-value-maker (format "~a_result" head))) rest)]
     [msr
      (unless (= (length arg-groups) (length (measure-params msr)))
        (unsup "measure `~a` takes ~a argument(s), got ~a" head (length (measure-params msr)) (length arg-groups)))
@@ -1096,18 +1461,23 @@
          (if (param-box-class cp)
              e
              (hash-set e (param-name cp) (expr->term ts env)))))
-     ;; Instantiate the callee's type variables: a parameter whose
-     ;; whole type is `?a` binds `a` to the sort of its argument.  (The
-     ;; callee's own `?a`, an uninterpreted sort, means nothing here.)
+     ;; Instantiate the callee's type variables from the sorts of the
+     ;; arguments: `?a` in a parameter's type (whole, or inside an
+     ;; option or a pair) binds `a` to the corresponding sort of its
+     ;; argument.  (The callee's own `?a`, an uninterpreted sort, means
+     ;; nothing here.)
      (define inst
        (for/fold ([h (hash)]) ([cp (in-list (fn-params callee))])
-         (define a (type-var-of (param-base cp)))
-         (define actual (and a (hash-ref callee-env (param-name cp) #f)))
-         (if (and actual (not (flex? actual)) (not (hash-has-key? h a)))
-             (hash-set h a (T-sort actual))
+         (define pat (base-sort (param-base cp)))
+         (define actual (and (sort-has-tvar? pat) (hash-ref callee-env (param-name cp) #f)))
+         (if (and actual (not (flex? actual)))
+             (or (sort-match pat (T-sort actual) h) h)
              h)))
      (define ret-type (fn-ret-base callee))
-     (define ret-tv (type-var-of ret-type))
+     (define ret-pat (base-sort ret-type))
+     ;; the result's sort, or #f when the arguments leave one of its
+     ;; type variables unbound
+     (define ret-inst (sort-subst ret-pat inst))
      ;; The callee's return refinement, assumed of the result.  Over a
      ;; result the checker does not model it is best-effort: a predicate
      ;; that only a measure could state is dropped, which assumes less.
@@ -1115,10 +1485,10 @@
        (when (and (fn-ret callee) (not (trivially-true? (fn-ret callee))))
          (match-define (refinement bound pred) (fn-ret callee))
          (define (assume!)
-           (push-extra! (format "(assert ~a)"
-                                (bool-of (parameterize ([current-allow-calls #f])
-                                           (expr->term pred (hash-set callee-env bound t)))
-                                         "a return refinement"))))
+           (push-extra! (guarded-assert
+                         (bool-of (parameterize ([current-allow-calls #f])
+                                    (expr->term pred (hash-set callee-env bound t)))
+                                  "a return refinement"))))
          (if (sort-smt (T-sort t))
              (assume!)
              (with-handlers ([unsupported? void]) (assume!)))))
@@ -1126,10 +1496,10 @@
        (cond
          ;; The arguments leave the result's type variable unbound, so
          ;; the result has whatever type its use needs.
-         [(and ret-tv (not (hash-ref inst ret-tv #f)))
+         [(not ret-inst)
           (flex-term (fresh-value-maker (format "~a_result" head) assume-ret!))]
          [else
-          (define ret-sort (if ret-tv (hash-ref inst ret-tv) (base-sort ret-type)))
+          (define ret-sort ret-inst)
           (define const (fresh-name (format "~a_result" head)))
           (cond
             [(sort-smt ret-sort)
@@ -1139,12 +1509,12 @@
              (assume-invariant! rt push-extra!)
              (assume-ret! rt)
              rt]
-            ;; Result type is not modelled: an opaque value, usable only
+            ;; Result type is not modeled: an opaque value, usable only
             ;; through a measure (which its return refinement may fix).
             [else
              (push-extra! (format "(declare-const ~a Opaque)" const))
              (define rt (T const 'opaque
-                           (if (or ret-tv (null? ret-type)) (hash) (hash '%type ret-type))
+                           (if (or (sort-has-tvar? ret-pat) (null? ret-type)) (hash) (hash '%type ret-type))
                            (string->symbol const)))
              (assume-ret! rt)
              rt])]))
@@ -1156,12 +1526,28 @@
     [(and (eq? head 'cons) (= (length arg-groups) 2))
      (values (builtin-call head (list #f (expr->term (second arg-groups) env))) rest)]
     [(builtin? head)
-     (define arg-terms (for/list ([ts (in-list arg-groups)]) (expr->term ts env)))
+     ;; Arguments the result's size does not depend on are not
+     ;; translated (a function for `map`/`filter`, an element for
+     ;; `make_array`); calls inside them are still found by the call scan.
+     (define skip
+       (case head
+         [(map filter) '(0)]
+         [(make_array) '(1)]
+         [else '()]))
+     (define arg-terms
+       (for/list ([ts (in-list arg-groups)] [k (in-naturals)])
+         (if (memv k skip) #f (expr->term ts env))))
      (values (builtin-call head arg-terms) rest)]
+    ;; `Array(e, ...)`: an array of that many elements.
+    [(eq? head 'Array)
+     (values (sized 'array_length '(Arrayof) (number->string (length arg-groups))) rest)]
     [(hash-ref (current-ctor-table) head #f)
      ;; A datatype value: an algebraic-datatype term.  Its field
      ;; obligations are generated by the call scan, not here.
      => (lambda (fields) (values (ctor-term head fields arg-groups env) rest))]
+    ;; Options and pairs.
+    [(memq head '(some none values fst snd is_some is_none))
+     (values (option-pair-call head arg-groups env) rest)]
     ;; `error(...)` and the built-in `unreachable()` never return: the
     ;; path that reaches them is excluded (partial correctness), and
     ;; their result has whatever type its context needs.  `error`'s
@@ -1175,9 +1561,13 @@
     ;; the call scan.
     [(eq? head 'assert)
      (values (t-opaque-typed '(Void) #f) rest)]
+    ;; Another built-in: its result is a value of whatever type its use
+    ;; needs, about which nothing more is known.
+    [(memq head unmodeled-builtins)
+     (values (flex-term (fresh-value-maker (format "~a_result" head))) rest)]
     [else
-     (unsup "call to `~a`, which is neither a function defined in this module nor one of the builtins the checker models (~a)"
-            head builtin-names-text)]))
+     (unsup "call to `~a`, which is neither defined in this module nor a Shplait builtin"
+            head)]))
 
 ;; ======================================================================
 ;; Bodies: branches with path conditions
@@ -1196,15 +1586,13 @@
      (define-values (cond-toks alts-tail) (split-at-alts rest))
      (match alts-tail
        [(list (list 'alts then-blk else-blk))
-        (define then-toks (block-result-toks then-blk))
-        (define else-toks (block-result-toks else-blk))
         (define-values (cond-smt returns)
           (with-divergence
            (lambda () (bool-of (expr->term cond-toks env) "an `if` condition"))))
         (append
-         (for/list ([b (in-list (body->branches then-toks env))])
+         (for/list ([b (in-list (at-path cond-smt (lambda () (block->branches then-blk env))))])
            (list (conj returns (conj cond-smt (first b))) (second b)))
-         (for/list ([b (in-list (body->branches else-toks env))])
+         (for/list ([b (in-list (at-path (negate cond-smt) (lambda () (block->branches else-blk env))))])
            (list (conj returns (conj (negate cond-smt) (first b))) (second b))))]
        [_ (unsup "`if` without exactly two `|` alternatives")])]
     [(list 'cond (list 'alts clauses ...))
@@ -1217,15 +1605,101 @@
      #:when (let-values ([(x r b) (split-let toks)]) x)
      (define-values (x rhs blk) (split-let toks))
      (define-values (env* returns) (with-divergence (lambda () (bind-let x rhs env))))
-     (for/list ([b (in-list (body->branches (block-result-toks blk) env*))])
+     (for/list ([b (in-list (at-path returns (lambda () (block->branches blk env*))))])
        (list (conj returns (first b)) (second b)))]
+    ;; `block: ...`
+    [(list 'block (cons 'block gs))
+     (block->branches (cons 'block gs) env)]
     [(cons (? symbol? kw) _)
-     #:when (memq kw '(letrec let_cc begin block try time trace))
-     (unsup "`~a` is not supported inside a checked function body; use a local `def` or a `let` for a binding, or move the code into its own `fun`"
+     #:when (memq kw '(letrec let_cc begin try time trace))
+     (unsup "`~a` is not supported in a checked function body"
             kw)]
     [_
      (define-values (t returns) (with-divergence (lambda () (expr->term toks env))))
      (list (list returns t))]))
+
+;; A nested block (an `if` arm, a `cond` or `match` clause, a `let`
+;; body, `block:`): its statements, then the branches of its result.
+;; What the statements establish (a `def`'s value, an `assert`'s
+;; predicate, that a `def`'s right-hand side returns) holds on this
+;; path only, so it becomes part of the path condition.
+(define (block->branches blk env)
+  (define gs (block-groups blk))
+  (when (null? gs) (unsup "empty block"))
+  (define-values (env* path) (nested-statements (drop-right gs 1) env))
+  (for/list ([b (in-list (at-path path (lambda () (body->branches (last gs) env*))))])
+    (list (conj path (first b)) (second b))))
+
+;; -> (values env path), the environment after `stmts` and what holds
+;; once they have run.
+(define (nested-statements stmts env)
+  (for/fold ([env env] [path "true"]) ([st (in-list stmts)])
+    (at-path path (lambda () (nested-statement st env path)))))
+
+;; Errors the call scan finds in nested statements (a `def` that shadows
+;; a binding), for the function's report.
+(define current-scan-errors (make-parameter #f))
+(define (note-scan-error! why)
+  (define b (current-scan-errors))
+  (when b (set-box! b (cons why (unbox b)))))
+
+(define (nested-statement st env path)
+  (define (builtin-named? name) (not (hash-ref (current-sig-table) name #f)))
+  ;; a `def` may not shadow: its name then stands for the reason
+  (define (shadow-why x)
+    (and (or (hash-ref env x #f) (hash-ref (current-box-params) x #f))
+         (format "local `def ~a` shadows a parameter or an earlier local definition; rename it" x)))
+  ;; the term of a `def`'s right-hand side and what must hold for it to
+  ;; return, or #f and why it cannot be translated
+  (define (rhs-term rhs)
+    (with-handlers ([unsupported? (lambda (e) (values #f (unsupported-why e)))])
+      (with-divergence (lambda () (expr->term rhs env)))))
+  ;; a statement form the checker does not support is reported once, by
+  ;; the call scan; what follows it is still checked
+  (define-values (kind name rhs)
+    (with-handlers ([unsupported? (lambda (e)
+                                    (note-scan-error! (unsupported-why e))
+                                    (values 'unsupported #f #f))])
+      (classify-statement st)))
+  (case kind
+    [(unsupported) (values env path)]
+    [(def)
+     (define-values (t returns) (rhs-term rhs))
+     (cond
+       [(shadow-why name)
+        => (lambda (why) (note-scan-error! why) (values (hash-set env name (failed-def why)) path))]
+       [t (values (bind-local env name t) (conj path returns))]
+       [else (values (hash-set env name (failed-def returns)) path)])]
+    [(defvalues)
+     (define-values (t returns) (rhs-term rhs))
+     (cond
+       [(ormap shadow-why name)
+        => (lambda (why)
+             (note-scan-error! why)
+             (values (for/fold ([e env]) ([x (in-list name)]) (hash-set e x (failed-def why))) path))]
+       [(not t) (values (for/fold ([e env]) ([x (in-list name)]) (hash-set e x (failed-def returns))) path)]
+       [(and (= (length name) 2) (not (flex? t)) (pair-sort? (T-sort t)))
+        (values (for/fold ([e env]) ([x (in-list name)] [which '(fst snd)])
+                  (bind-local e x (pair-select which t (format "~a_local" x))))
+                (conj path returns))]
+       [else
+        (values (for/fold ([e env]) ([x (in-list name)])
+                  (hash-set e x (flex-term (fresh-value-maker (format "~a_local" x)))))
+                (conj path returns))])]
+    [else
+     (match st
+       [(app fun-def-parts (list (? symbol? n) _ _))
+        (values (hash-set env n (local-function)) path)]
+       [(list (? symbol? head) (cons 'parens _))
+        #:when (and (memq head '(error unreachable)) (builtin-named? head))
+        (values env "false")]
+       [(list 'assert (list 'parens (cons 'group p-toks)))
+        #:when (builtin-named? 'assert)
+        ;; the assert's own obligation checks it
+        (define p (with-handlers ([unsupported? (lambda (e) #f)])
+                    (bool-of (expr->term p-toks env) "`assert`")))
+        (values env (if p (conj path p) path))]
+       [_ (values env path)])]))
 
 ;; A block's groups, and the group that is its value (the last one).
 ;; Earlier groups are statements: their calls are scanned for
@@ -1239,7 +1713,7 @@
   (when (null? gs) (unsup "empty block"))
   (for ([g (in-list (reverse (cdr (reverse gs))))])
     (when (match g [(cons 'def _) #t] [_ #f])
-      (unsup "a local `def` inside a `match` clause, an `if` arm or a `let` body is not supported; move it to the top of the function body, use a `let`, or move the code into its own `fun`")))
+      (unsup "a local `def` inside a block within an expression is not supported")))
   (last gs))
 (define (block-groups/safe blk)
   (with-handlers ([unsupported? (lambda (e) '())]) (block-groups blk)))
@@ -1270,25 +1744,25 @@
       [else
        (match (car clauses)
          [`(block (group #:else ,else-blk))
-          (define body-toks (block-result-toks else-blk))
           (loop (cdr clauses) neg-prev
                 (append (reverse
-                         (for/list ([b (in-list (body->branches body-toks env))])
+                         (for/list ([b (in-list (at-path neg-prev (lambda () (block->branches else-blk env))))])
                            (list (conj neg-prev (first b)) (second b))))
                         acc))]
          [`(block (group . ,clause-toks))
           (define-values (guard-toks body-block) (split-at-trailing-block clause-toks))
-          (define body-toks (block-result-toks body-block))
           ;; a guard that never returns cuts off this clause and the
           ;; ones after it
           (define-values (guard-smt returns)
-            (with-divergence
-             (lambda () (bool-of (expr->term guard-toks env) "a `cond` guard"))))
+            (at-path neg-prev
+                     (lambda ()
+                       (with-divergence
+                        (lambda () (bool-of (expr->term guard-toks env) "a `cond` guard"))))))
           (define path (conj neg-prev (conj returns guard-smt)))
           (loop (cdr clauses)
                 (conj neg-prev (conj returns (negate guard-smt)))
                 (append (reverse
-                         (for/list ([b (in-list (body->branches body-toks env))])
+                         (for/list ([b (in-list (at-path path (lambda () (block->branches body-block env))))])
                            (list (conj path (first b)) (second b))))
                         acc))]
          [_ (unsup "unrecognized `cond` clause shape")])])))
@@ -1328,9 +1802,9 @@
      (match cl
        [`(block (group . ,clause-toks))
         (define-values (pat-toks body-block) (split-at-trailing-block clause-toks))
-        (define body-toks (block-result-toks body-block))
-        (define-values (env* pc) (bind-pattern pat-toks env scrut))
-        (for/list ([b (in-list (body->branches body-toks env*))])
+        (define-values (env* pc) (at-path returns (lambda () (bind-pattern pat-toks env scrut))))
+        (for/list ([b (in-list (at-path (conj returns (or pc "true"))
+                                        (lambda () (block->branches body-block env*))))])
           (list (conj returns (if pc (conj pc (first b)) (first b))) (second b)))]
        [_ (unsup "unrecognized `match` clause shape")]))))
 
@@ -1364,11 +1838,11 @@
          (unsup "`match` pattern variable `~a` shadows an existing binding; rename it"
                 name))
        (define const (fresh-name (format "~a_field" name)))
-       (define sort (cond [fld (field-sort fld)] [(eq? sort-hint 'opaque) 'opaque] [else 'int]))
+       (define sort (cond [fld (field-sort fld)] [sort-hint sort-hint] [else 'int]))
        (push-prefix! (format "(declare-const ~a ~a)" const (or (sort-smt sort) "Opaque")))
        (note-const-sort! const sort)
        (define t (T const sort (hash) (string->symbol const)))
-       (assume-invariant! t push-prefix!)
+       (defer! (lambda () (assume-invariant! t push-prefix!)))
        (values (if (regexp-match? #rx"^_" (symbol->string name)) env (hash-set env name t))
                t)]))
   ;; -> (values env (listof term)) ; one term per pattern position.
@@ -1391,11 +1865,21 @@
       (for ([f (in-list fields)] [t (in-list terms)]
             #:when (and (dfield-refinement f) (not (trivially-true? (dfield-refinement f)))))
         (match-define (refinement bound pred) (dfield-refinement f))
-        (push-prefix! (format "(assert ~a)"
-                              (bool-of (parameterize ([current-allow-calls #f])
-                                         (expr->term pred (hash-set field-env bound t)))
-                                       "a datatype field refinement")))))
+        (defer! (lambda ()
+                  (push-prefix! (guarded-assert
+                                 (bool-of (parameterize ([current-allow-calls #f])
+                                            (expr->term pred (hash-set field-env bound t)))
+                                          "a datatype field refinement")))))))
     (values env* terms))
+  ;; What is assumed of the pattern's variables holds only where the
+  ;; pattern matches, so it waits for the pattern's condition.
+  (define deferred '())
+  (define (defer! th) (set! deferred (cons th deferred)))
+  (define-values (env* pc) (bind-pattern-shape pat-toks env scrut bind-var bind-args))
+  (at-path (or pc "true") (lambda () (for ([th (in-list (reverse deferred))]) (th))))
+  (values env* pc))
+
+(define (bind-pattern-shape pat-toks env scrut bind-var bind-args)
   (define (scrut-data?) (and scrut (data-sort? (T-sort scrut)) (T-smt scrut)))
   (define (scrut-length)
     (and scrut (eq? (T-sort scrut) 'opaque)
@@ -1419,6 +1903,31 @@
                              (if (null? terms)
                                  (symbol->string ctor)
                                  (format "(~a ~a)" ctor (string-join (map T-smt terms) " "))))))]
+       ;; `none()` and `some(v)` on an option
+       [(and (eq? ctor 'none) (null? gs))
+        (values env
+                (and scrut (opt-sort? (T-sort scrut))
+                     (format "(= ~a (as %none ~a))" (T-smt scrut) (sort-smt (T-sort scrut)))))]
+       [(and (eq? ctor 'some) (= (length gs) 1) scrut (opt-sort? (T-sort scrut)))
+        (define-values (env* terms) (bind-args env gs #f (list (cadr (T-sort scrut)))))
+        (values env*
+                (and (T-smt (first terms))
+                     (format "(= ~a ((as %some ~a) ~a))" (T-smt scrut) (sort-smt (T-sort scrut))
+                             (T-smt (first terms)))))]
+       ;; `some(v)` on an option whose element type is not known (the
+       ;; result of a builtin such as `map_get`): `v` is a value of the
+       ;; type its use needs, about which nothing else is known
+       [(and (eq? ctor 'some) (= (length gs) 1))
+        (match gs
+          [(list (list 'group (? symbol? v)))
+           (when (and (not (regexp-match? #rx"^_" (symbol->string v)))
+                      (or (hash-ref env v #f) (hash-ref (current-box-params) v #f)))
+             (unsup "`match` pattern variable `~a` shadows an existing binding; rename it" v))
+           (values (if (regexp-match? #rx"^_" (symbol->string v))
+                       env
+                       (hash-set env v (flex-term (fresh-value-maker (format "~a_field" v)))))
+                   #f)]
+          [_ (unsup "`match` patterns may bind only plain variables (no nested patterns)")])]
        [(and (eq? ctor 'cons) (= (length gs) 2))
         (define-values (env* terms) (bind-args env gs #f '(int opaque)))
         (define len (scrut-length))
@@ -1452,7 +1961,11 @@
 ;; is discarded, since the scan cannot place it on the right path
 ;; (dropping it only makes the obligations stronger).
 (define (find-calls stx env)
-  (discarding-divergence (lambda () (find-calls-rec stx '() env))))
+  (parameterize ([scan-base (current-path)])
+    (discarding-divergence (lambda () (find-calls-rec stx '() env)))))
+
+;; The path where a scan starts; its path conditions extend it.
+(define scan-base (make-parameter "true"))
 
 (define (try-guard-smt toks env)
   (with-handlers ([unsupported? (lambda (e) #f)])
@@ -1460,6 +1973,12 @@
     (and (eq? (T-sort t) 'bool) (T-smt t))))
 
 (define (find-calls-rec stx path-conds env)
+  (parameterize ([current-path (conj (scan-base) (conj* path-conds))])
+    (find-calls-rec* stx path-conds env)))
+
+(define (conj* gs) (for/fold ([p "true"]) ([g (in-list gs)]) (conj p g)))
+
+(define (find-calls-rec* stx path-conds env)
   (cond
     [(not (pair? stx)) '()]
     [else
@@ -1471,8 +1990,7 @@
         #:when (fun-def-parts stx)
         (match-define (list name params blk) (fun-def-parts stx))
         (define env* (bind-local-params name params env))
-        (append-map (lambda (ts) (find-calls-rec ts path-conds env*))
-                    (block-groups/safe blk))]
+        (scan-groups (block-groups/safe blk) path-conds env*)]
        ;; `let x = rhs: body`: calls in the body see `x` (bound to the
        ;; reason, if it cannot be, so an argument that needs it says why)
        [(list-rest 'let (? symbol?) '(op =) _)
@@ -1483,15 +2001,14 @@
                            (lambda (e) (hash-set env x (failed-local (unsupported-why e))))])
             (bind-let x rhs env)))
         (append (find-calls-rec rhs path-conds env)
-                (append-map (lambda (ts) (find-calls-rec ts path-conds env*))
-                            (block-groups/safe blk)))]
+                (scan-groups (block-groups/safe blk) path-conds env*))]
        [(cons 'if rest)
         (define-values (cond-toks alts-tail) (split-at-alts rest))
         (match alts-tail
           [(list (list 'alts then-blk else-blk))
            (define g (try-guard-smt cond-toks env))
            (define (scan blk pcs)
-             (append-map (lambda (ts) (find-calls-rec ts pcs env)) (block-groups/safe blk)))
+             (scan-groups (block-groups/safe blk) pcs env))
            (append
             (find-calls-rec cond-toks path-conds env)
             (scan then-blk (if g (cons g path-conds) path-conds))
@@ -1506,8 +2023,7 @@
                [`(block (group #:else ,else-blk))
                 (loop (cdr cs) pcs
                       (append acc
-                              (append-map (lambda (ts) (find-calls-rec ts pcs env))
-                                          (block-groups/safe else-blk))))]
+                              (scan-groups (block-groups/safe else-blk) pcs env)))]
                [`(block (group . ,clause-toks))
                 (define parts
                   (with-handlers ([unsupported? (lambda (e) #f)])
@@ -1520,9 +2036,8 @@
                          (if g (cons (format "(not ~a)" g) pcs) pcs)
                          (append acc
                                  (find-calls-rec (first parts) pcs env)
-                                 (append-map (lambda (ts)
-                                               (find-calls-rec ts (if g (cons g pcs) pcs) env))
-                                             (block-groups/safe (second parts)))))])]
+                                 (scan-groups (block-groups/safe (second parts))
+                                              (if g (cons g pcs) pcs) env)))])]
                [_ (loop (cdr cs) pcs (append acc (find-calls-children (car cs) pcs env)))])]))]
        [(cons 'match rest)
         (define-values (scrut-toks alts-tail) (split-at-alts rest))
@@ -1545,11 +2060,12 @@
                      (define-values (env* pc)
                        (with-handlers ([unsupported? (lambda (e) (values env #f))])
                          (bind-pattern (first parts) env scrut)))
-                     (append-map (lambda (ts)
-                                   (find-calls-rec ts (if pc (cons pc path-conds) path-conds) env*))
-                                 (block-groups/safe (second parts)))])]
+                     (scan-groups (block-groups/safe (second parts))
+                                  (if pc (cons pc path-conds) path-conds) env*)])]
                  [_ '()]))))]
           [_ (find-calls-children stx path-conds env)])]
+       [(list 'block (cons 'block gs))
+        (scan-groups (block-groups/safe (cons 'block gs)) path-conds env)]
        [(list-rest (? symbol? name)
                    (list 'parens groups ...)
                    rest)
@@ -1560,6 +2076,25 @@
                 (append-map (lambda (a) (find-calls-rec a path-conds env)) actuals)
                 (find-calls-rec rest path-conds env))]
        [_ (find-calls-children stx path-conds env)])]))
+
+;; The calls in a block's groups.  A statement's definitions are in
+;; scope in the groups after it, and what it establishes (an `assert`,
+;; or that an `error` statement does not return) is a path condition
+;; for them.
+(define (scan-groups gs path-conds env)
+  (let loop ([gs gs] [pcs path-conds] [env env] [acc '()])
+    (cond
+      [(null? gs) acc]
+      [else
+       (define calls (find-calls-rec (car gs) pcs env))
+       (define-values (env* pcs*)
+         (if (null? (cdr gs))
+             (values env pcs)
+             (parameterize ([current-path (conj (scan-base) (conj* pcs))])
+               (with-handlers ([unsupported? (lambda (e) (values env pcs))])
+                 (define-values (env* path) (nested-statement (car gs) env "true"))
+                 (values env* (if (equal? path "true") pcs (cons path pcs)))))))
+       (loop (cdr gs) pcs* env* (append acc calls))])))
 
 (define (find-calls-children stx path-conds env)
   (append
@@ -1591,7 +2126,7 @@
                       #:when (file-exists? (build-path home rel)))
             (path->string (build-path home rel))))
         (error 'shplait/liquid
-               "z3 not found; refinement checking requires z3. Put it on PATH, or set the Z3 environment variable to its location (DrRacket started from the Finder does not see the shell's PATH, so start it from a terminal or set Z3)"))))
+               "Z3 not found (see Installing Liquid Shplait in the guide)"))))
 
 (define z3-timeout-seconds 10)
 (define small-value-bound 3)
@@ -1675,11 +2210,10 @@
      (define nl (regexp-match-positions #rx"\n" trimmed))
      (values 'sat (if nl (substring trimmed (cdar nl)) ""))]
     [(regexp-match? #rx"timeout|unknown" trimmed)
-     (unsup "z3 gave up on obligation `~a` after ~a seconds (~a). The claim may still be true: the checker proves a claim by unfolding measures a step at a time and it cannot reason by induction, so a fact about every value of a recursive datatype (that a smaller scope implies a larger one, say) is out of its reach unless a precondition states exactly what the call needs"
-            label z3-timeout-seconds (string-trim trimmed))]
+     (unsup "Z3 timed out after ~a seconds (~a); the claim may still be true (see Timeout in the guide)"
+            z3-timeout-seconds (string-trim trimmed))]
     [else
-     (unsup "z3 could not decide obligation `~a` (output: ~a)"
-            label
+     (unsup "Z3 could not decide the claim (output: ~a)"
             (if (> (string-length trimmed) 200)
                 (string-append (substring trimmed 0 200) "...")
                 trimmed))]))
@@ -1728,11 +2262,29 @@
   (define base (regexp-replace #px"_[0-9]+$" n ""))
   (cond
     [(regexp-match #px"^(.*)_(?:field|local|def|arg)$" base) => (lambda (m) (second m))]
+    [(regexp-match #px"^(length|string_length|array_length)_of_(.*)$" base)
+     => (lambda (m) (format "~a(~a)" (second m) (source-name (third m))))]
     [(regexp-match #px"^(.*)_result$" base) => (lambda (m) (format "~a(...)" (second m)))]
     [(regexp-match #px"^(.*)_content$" base) => (lambda (m) (format "unbox(~a)" (second m)))]
-    [(regexp-match #px"^(length|string_length)_of_(.*)$" base)
-     => (lambda (m) (format "~a(~a)" (second m) (source-name (third m))))]
+    [(regexp-match #px"^(.*)_element$" base) => (lambda (m) (format "~a[...]" (second m)))]
     [else base]))
+
+;; A Z3 model value with its `let`s substituted away.
+(define (expand-lets v [env (hash)])
+  (match v
+    [(list 'let (list (list (? symbol? xs) es) ...) body)
+     (define env* (for/fold ([h env]) ([x (in-list xs)] [e (in-list es)])
+                    (hash-set h x (expand-lets e env))))
+     (expand-lets body env*)]
+    [(? symbol?) (hash-ref env v v)]
+    [(? list?) (for/list ([x (in-list v)]) (expand-lets x env))]
+    [_ v]))
+
+;; A character code point as a `Char` literal.
+(define (render-char n)
+  (if (and (exact-integer? n) (<= 0 n #x10FFFF) (not (<= #xD800 n #xDFFF)))
+      (format "Char~s" (string (integer->char n)))
+      (number->string n)))
 
 ;; Pretty-print a Z3 model: (define-fun n () Int 1) / (- 1) -> "n = 1",
 ;; in source names, without repeating a binding that says the same thing.
@@ -1750,13 +2302,23 @@
       (read (open-input-string model-text))))
   (define (render-value v [sort #f])
     (match v
-      [(? number?) (if (eq? sort 'sym) (symbol-of-code v) (number->string v))]
+      [(? number?)
+       (cond [(eq? sort 'sym) (symbol-of-code v)]
+             [(eq? sort 'char) (render-char v)]
+             [else (number->string v)])]
+      [(list 'as '%none _) "none()"]
+      [(or (list '%some x) (list (list 'as '%some _) x)) (format "some(~a)" (render-value x (and (opt-sort? sort) (cadr sort))))]
+      [(or (list '%pair x y) (list (list 'as '%pair _) x y))
+       (format "values(~a, ~a)"
+               (render-value x (and (pair-sort? sort) (cadr sort)))
+               (render-value y (and (pair-sort? sort) (caddr sort))))]
       [(list '- (? number? n)) (format "-~a" n)]
       ['true "#true"]
       ['false "#false"]
       [(? symbol?)
        (cond
          [(hash-ref (current-ctor-table) v #f) (format "~a()" v)]
+         [(eq? v '%none) "none()"]
          ;; a value of a type variable: z3 names the elements of an
          ;; uninterpreted sort `%tv_a!val!0`, `%tv_a!val!1`, ...
          [(regexp-match #px"^%tv_(.+)!val!([0-9]+)$" (symbol->string v))
@@ -1781,7 +2343,8 @@
                                   (not (regexp-match? #rx"!" (symbol->string n)))
                                   (mentioned? (symbol->string n)))]
                             [_ #f]))
-          (match-define (list _ name _ _ val) d)
+          (match-define (list _ name _ _ val0) d)
+          (define val (expand-lets val0))
           (define sort (let ([h (current-const-sorts)]) (and h (hash-ref h (symbol->string name) #f))))
           (format "~a = ~a" (source-name (symbol->string name)) (render-value val sort)))
         '()))
@@ -1874,7 +2437,9 @@
   (define s (base-sort (param-base p)))
   (if (sort-smt s)
       (t-of (symbol->string (param-name p)) s (param-name p))
-      (T (symbol->string (param-name p)) 'opaque (hash) (param-name p))))
+      (T (symbol->string (param-name p)) 'opaque
+         (if (null? (param-base p)) (hash) (hash '%type (param-base p)))
+         (param-name p))))
 
 ;; Eager declaration check: every declared predicate must be
 ;; translatable, whether or not any obligation ends up using it.
@@ -1886,14 +2451,13 @@
     [else
      (with-handlers ([unsupported?
                       (lambda (e)
-                        (add-err! (format "the refinement on ~a" who)
-                                  (unsupported-why e))
+                        (add-err! who (unsupported-why e))
                         #f)])
       (define bound-term
         (let ([s (base-sort base)])
           (if (sort-smt s)
               (t-of "declared_value" s 'declared_value)
-              (t-opaque (hash) 'declared_value))))
+              (t-opaque-typed base 'declared_value))))
       (parameterize ([current-allow-calls #f]
                      [current-extras (box '())]
                      [current-prefix (box '())]
@@ -1953,7 +2517,7 @@
           (walk rest)]
          [(cons (? symbol? name) rest)
           #:when (refined-ctor? name)
-          (err "constructor `~a` has a refined field, so it may be used only as a direct call `~a(...)`; passing it as a value would build values nothing checked"
+          (err "constructor `~a` has a refined field, so it must be called directly, as in `~a(...)`"
                name name)
           (walk rest)]
          [_ (when (pair? (car x)) (walk (car x)))
@@ -1996,7 +2560,7 @@
          [(cons 'fun _)
           #:when (fun-def-parts x)
           (for ([b (in-list (box-names-in x))])
-            (err "a function defined inside another may not use that function's `Boxof` parameter `~a` (the checker tracks a box only in the function that receives it); pass the box to a top-level function instead"
+            (err "a local function may not use the enclosing function's `Boxof` parameter `~a`"
                  b))]
          [(list-rest (? symbol? name) (cons 'parens groups) rest)
           (define actuals
@@ -2033,7 +2597,7 @@
   (define p (and name (hash-ref (current-box-params) name #f)))
   (define def-entry (and name (hash-ref (current-box-defs) name #f)))
   (define (reject why)
-    (add-err! (format "argument ~a of the call to `~a`" j callee-name)
+    (add-err! (format "call to `~a`, argument ~a" callee-name j)
               (format "~a, but that position needs ~a; pass `box(<expression>)` directly, forward a `Boxof` parameter declared with the same element refinement, or use a top-level `def name = box(...)` that is only ever used at this refinement"
                       why (class-desc cls))))
   (define (check-contents! init what)
@@ -2042,7 +2606,7 @@
       [(list 'box pred)
        (with-handlers ([unsupported?
                         (lambda (e)
-                          (add-err! (format "argument ~a of the call to `~a`" j callee-name)
+                          (add-err! (format "call to `~a`, argument ~a" callee-name j)
                                     (unsupported-why e)))])
          (define t (expr->term init (hash)))
          (define goal (bool-of (parameterize ([current-allow-calls #f])
@@ -2093,9 +2657,30 @@
          [_ (or (loop (car x)) (loop (cdr x)))])])))
 
 ;; Statement classification for a multi-statement body.
-;; -> (values 'def name rhs-toks) | (values 'expr #f toks)
+;; A local `def`'s name bound to `t`: a constant equal to it, named
+;; after it for counterexamples, when the checker models its type.
+(define (bind-local env name t)
+  (cond
+    [(sort-smt (T-sort t))
+     (define const (fresh-name (format "~a_local" name)))
+     (push-prefix! (format "(declare-const ~a ~a)" const (sort-smt (T-sort t))))
+     (push-prefix! (format "(assert (= ~a ~a))" const (T-smt t)))
+     (note-const-sort! const (T-sort t))
+     (assume-invariant! t push-prefix!)
+     (hash-set env name (T const (T-sort t) (T-measures t) (string->symbol const)))]
+    [else (hash-set env name t)]))
+
+;; -> (values 'def name rhs-toks) | (values 'defvalues names rhs-toks)
+;;    | (values 'expr #f toks)
 (define (classify-statement toks)
   (match toks
+    [(list 'def 'values (cons 'parens gs) '(op =) rhs ...)
+     (define names
+       (for/list ([g (in-list gs)])
+         (match g
+           [(list 'group (? symbol? x)) x]
+           [_ (unsup "`def values(...)` may bind only plain names")])))
+     (values 'defvalues names rhs)]
     [(list-rest 'def (? symbol? name) rest)
      (define eq-pos
        (for/first ([t (in-list rest)] [i (in-naturals)] #:when (equal? t '(op =))) i))
@@ -2103,8 +2688,8 @@
        (unsup "local `def ~a` without a `=` right-hand side" name))
      (values 'def name (list-tail rest (add1 eq-pos)))]
     [(cons (? symbol? kw) _)
-     #:when (memq kw '(letrec let_cc begin block try time trace macro module type import))
-     (unsup "`~a` is not supported inside a checked function body; use a local `def` or a `let` for a binding, or move the code into its own `fun`"
+     #:when (memq kw '(letrec let_cc begin try time trace macro module type import))
+     (unsup "`~a` is not supported in a checked function body"
             kw)]
     [_ (values 'expr #f toks)]))
 
@@ -2114,7 +2699,7 @@
   (define (add-obl! o) (set! obls (cons o obls)))
   (define (add-err! label why)
     (set! errs (cons (list (fn-name f)
-                           (format "fun `~a`: cannot check ~a: ~a"
+                           (format "`~a`, ~a: cannot check: ~a"
                                    (fn-name f) label why))
                      errs)))
   (define prefix (box '()))
@@ -2149,17 +2734,17 @@
     ;; An obligation that would only repeat the same message is skipped.
     (define bad-params
       (for/set ([p (in-list (fn-params f))]
-                #:unless (validate-refinement! (format "parameter `~a`" (param-name p))
+                #:unless (validate-refinement! (format "refinement on parameter `~a`" (param-name p))
                                                (param-refinement p) (param-base p)
                                                base-env add-err!))
         (param-name p)))
     (define ret-ok?
-      (validate-refinement! "the return type" (fn-ret f) (fn-ret-base f)
+      (validate-refinement! "return refinement" (fn-ret f) (fn-ret-base f)
                             base-env add-err!))
 
     ;; ---- preconditions, once per function
     (with-handlers ([unsupported?
-                     (lambda (e) (add-err! "this function's preconditions"
+                     (lambda (e) (add-err! "preconditions"
                                            (unsupported-why e)))])
       (parameterize ([current-allow-calls #f])
         (for ([p (in-list (fn-params f))]
@@ -2177,7 +2762,7 @@
     ;; ---- constructor and box usage discipline (total scans)
     (check-ctor-escape! (cons 'body (fn-body-groups f))
                         (lambda (fmt . args)
-                          (add-err! "the use of a constructor" (apply format fmt args))))
+                          (add-err! "constructor use" (apply format fmt args))))
     (walk-box-tree (cons 'body (fn-body-groups f))
                    (lambda (n) (hash-ref (current-box-params) n #f))
                    (lambda (callee-name j actual cls)
@@ -2185,7 +2770,7 @@
                        (check-box-argument (fn-name f) callee-name j actual cls
                                            add-err! add-obl!)))
                    (lambda (fmt . args)
-                     (add-err! "the use of a `Boxof` value" (apply format fmt args))))
+                     (add-err! "`Boxof` use" (apply format fmt args))))
 
     ;; ---- walk the body statement by statement
     (define groups (fn-body-groups f))
@@ -2195,7 +2780,7 @@
       (for/fold ([env base-env]) ([st (in-list stmts)])
         (with-handlers ([unsupported?
                          (lambda (e)
-                           (add-err! "a statement of the body" (unsupported-why e))
+                           (add-err! "statement" (unsupported-why e))
                            env)])
           (define-values (kind name rhs) (classify-statement st))
           (emit-call-obligations! f st env add-obl! add-err! prefix)
@@ -2212,17 +2797,29 @@
                                     (hash-set! failed-locals name (unsupported-why e))
                                     #f)])
                    (expr->term rhs env)))
+               (if t (bind-local env name t) env)]
+              ;; `def values(x, y) = e`: the components of a pair; the
+              ;; names of a larger tuple are unknown values
+              [(eq? kind 'defvalues)
+               (for ([x (in-list name)])
+                 (when (or (hash-ref env x #f) (hash-ref (current-box-params) x #f))
+                   (unsup "local `def values(...)` binding `~a` shadows a parameter or an earlier local definition; rename it"
+                          x)))
+               (define t
+                 (with-handlers ([unsupported?
+                                  (lambda (e)
+                                    (for ([x (in-list name)])
+                                      (hash-set! failed-locals x (unsupported-why e)))
+                                    #f)])
+                   (expr->term rhs env)))
                (cond
                  [(not t) env]
-                 [(sort-smt (T-sort t))
-                  (define const (fresh-name (format "~a_local" name)))
-                  (push-prefix! (format "(declare-const ~a ~a)" const (sort-smt (T-sort t))))
-                  (push-prefix! (format "(assert (= ~a ~a))" const (T-smt t)))
-                  (note-const-sort! const (T-sort t))
-                  (assume-invariant! t push-prefix!)
-                  (hash-set env name
-                            (T const (T-sort t) (T-measures t) (string->symbol const)))]
-                 [else (hash-set env name t)])]
+                 [(and (= (length name) 2) (not (flex? t)) (pair-sort? (T-sort t)))
+                  (for/fold ([env env]) ([x (in-list name)] [which '(fst snd)])
+                    (bind-local env x (pair-select which t (format "~a_local" x))))]
+                 [else
+                  (for/fold ([env env]) ([x (in-list name)])
+                    (hash-set env x (flex-term (fresh-value-maker (format "~a_local" x)))))])]
               ;; a function defined here: its name is a local function
               ;; for the rest of the body (its calls are not checked
               ;; against any top-level function of the same name)
@@ -2244,7 +2841,7 @@
     (when (and ret-ok? (set-empty? bad-params) (fn-ret f) (not (trivially-true? (fn-ret f))))
       (match-define (refinement ret-bound ret-pred) (fn-ret f))
       (with-handlers ([unsupported?
-                       (lambda (e) (add-err! "the return obligation" (unsupported-why e)))])
+                       (lambda (e) (add-err! "return" (unsupported-why e)))])
         (define branches (body->branches result env))
         (for ([b (in-list branches)]
               [i (in-naturals 1)]
@@ -2253,7 +2850,8 @@
           (parameterize ([current-extras (box '())])
             (define goal
               (bool-of (parameterize ([current-allow-calls #f])
-                         (expr->term ret-pred (hash-set env ret-bound (second b))))
+                         (expr->term ret-pred (hash-set env ret-bound
+                                                        (at-declared (second b) (fn-ret-base f)))))
                        "the return refinement"))
             (define label
               (if (= (length branches) 1) "return" (format "return [branch ~a]" i)))
@@ -2283,124 +2881,137 @@
 
 ;; Call-site and set_box obligations discovered in one statement.
 (define (emit-call-obligations! f toks outer-env add-obl! add-err! prefix)
-  (for ([c (in-list (find-calls toks outer-env))])
+  (define scan-errors (box '()))
+  (define calls (parameterize ([current-scan-errors scan-errors]) (find-calls toks outer-env)))
+  (define reported (remove-duplicates (reverse (unbox scan-errors))))
+  (for ([why (in-list reported)])
+    (add-err! "local definition" why))
+  ;; a use of such a definition would only repeat the message
+  (define (add-err*! label why)
+    (unless (for/or ([r (in-list reported)]) (string-suffix? why r))
+      (add-err! label why)))
+  (for ([c (in-list calls)])
     (match-define (list callee-name actuals path-conds env) c)
-    (cond
-      ;; a call through a local binding (a function defined inside this
-      ;; one, a function-valued parameter or `let`) is not a call to the
-      ;; top-level function of that name, and has nothing to check
-      [(hash-ref env callee-name #f) (void)]
-      ;; the built-ins `unreachable()` and `assert(P)`
-      [(with-handlers ([unsupported?
-                        (lambda (e)
-                          (add-err! (format "the `~a`" callee-name) (unsupported-why e))
-                          #t)])
-         (reachability-obligation (fn-name f) callee-name actuals path-conds env))
-       => (lambda (o) (when (obligation? o) (add-obl! o)))]
-      [(eq? callee-name 'set_box)
-       (match actuals
-         [(list (list (? symbol? box-name)) value-toks)
-          (define p (hash-ref (current-box-params) box-name #f))
-          (cond
-            [(and (not p) (hash-ref (current-box-defs) box-name #f))
-             => (lambda (entry)
-                  (match (cdr entry)
-                    [(list 'box (? list?))
-                     (add-err! (format "the `set_box` on `~a`" box-name)
-                               "a top-level box viewed through an element refinement cannot be written inside a function; pass it as a `Boxof` parameter instead")]
-                    [_ (void)]))]
-            [(not p)
-             (add-err! (format "the `set_box` on `~a`" box-name)
-                       "the target of `set_box` must be a `Boxof` parameter of this function")]
-            [(and (param-refinement p) (not (trivially-true? (param-refinement p))))
-             (match-define (refinement bound pred) (param-refinement p))
-             (with-handlers ([unsupported?
-                              (lambda (e)
-                                (add-err! (format "the `set_box` obligation on `~a`" box-name)
-                                          (unsupported-why e)))])
-               ;; the value's constants stay function-level (the cache
-               ;; below reuses them), but a never-returning call in it
-               ;; excuses only this obligation
-               (define-values (value-t returns)
-                 (with-divergence (lambda () (expr->term value-toks env))))
-               ;; the element predicate speaks about the parameters, as at
-               ;; `unbox`, not about whatever a `let` binds at the call
-               (define goal
-                 (bool-of (parameterize ([current-allow-calls #f])
-                            (expr->term pred (hash-set (current-param-env) bound value-t)))
-                          "a Boxof element refinement"))
-               (add-obl!
-                (obligation (fn-name f)
-                            (format "set_box on `~a`" box-name)
-                            (assemble (cons returns path-conds) (format "(assert (not ~a))" goal))
-                            (render-claim pred)))
-               ;; After the write this box holds exactly this value, and
-               ;; any OTHER box may be an alias of it, so its cached
-               ;; contents are no longer known.
-               (when (current-unbox-cache)
-                 (hash-clear! (current-unbox-cache))
-                 (hash-set! (current-unbox-cache) box-name value-t)))]
-            [else (void)])]
-         [_ (add-err! "a `set_box`"
-                      "the target of `set_box` must be a `Boxof` parameter named directly")])]
-      ;; constructing a datatype value: each refined field is an obligation
-      [(hash-ref (current-ctor-table) callee-name #f)
-       => (lambda (fields)
-            (when (= (length actuals) (length fields))
-              (for ([actual (in-list actuals)]
-                    [fld (in-list fields)]
-                    [j (in-naturals 1)]
-                    #:when (and (dfield-refinement fld)
-                                (not (trivially-true? (dfield-refinement fld)))))
-                (match-define (refinement bound pred) (dfield-refinement fld))
-                (with-handlers ([unsupported?
-                                 (lambda (e)
-                                   (add-err! (format "field `~a` of `~a`"
-                                                     (dfield-name fld) callee-name)
-                                             (unsupported-why e)))])
-                  (parameterize ([current-extras (box '())])
-                    (define actual-t (expr->term actual env))
-                    (define siblings (sibling-env fields actuals j env))
-                    (define goal
-                      (bool-of (parameterize ([current-allow-calls #f])
-                                 (expr->term pred (hash-set siblings bound actual-t)))
-                               "a datatype field refinement"))
-                    (add-obl!
-                     (obligation (fn-name f)
-                                 (format "~a, field `~a`" callee-name (dfield-name fld))
-                                 (assemble path-conds
-                                           (format "(assert (not ~a))" goal)) (render-claim pred))))))))]
-      [else
-       (define callee (hash-ref (current-sig-table) callee-name #f))
-       (when callee
-         (cond
-           [(not (= (length actuals) (length (fn-params callee))))
-            (add-err! (format "the call to `~a`" callee-name)
-                      "argument count does not match the definition")]
-           [else
+    (parameterize ([current-path (conj (current-path) (conj* path-conds))])
+      (emit-call-obligation! f callee-name actuals path-conds env add-obl! add-err*!))))
+
+(define (emit-call-obligation! f callee-name actuals path-conds env add-obl! add-err!)
+  (cond
+    ;; a call through a local binding (a function defined inside this
+    ;; one, a function-valued parameter or `let`) is not a call to the
+    ;; top-level function of that name, and has nothing to check
+    [(hash-ref env callee-name #f) (void)]
+    ;; the built-ins `unreachable()` and `assert(P)`
+    [(with-handlers ([unsupported?
+                      (lambda (e)
+                        (add-err! (format "`~a`" callee-name) (unsupported-why e))
+                        #t)])
+       (reachability-obligation (fn-name f) callee-name actuals path-conds env))
+     => (lambda (o) (when (obligation? o) (add-obl! o)))]
+    [(eq? callee-name 'set_box)
+     (match actuals
+       [(list (list (? symbol? box-name)) value-toks)
+        (define p (hash-ref (current-box-params) box-name #f))
+        (cond
+          [(and (not p) (hash-ref (current-box-defs) box-name #f))
+           => (lambda (entry)
+                (match (cdr entry)
+                  [(list 'box (? list?))
+                   (add-err! (format "`set_box` on `~a`" box-name)
+                             "a top-level box viewed through an element refinement cannot be written inside a function; pass it as a `Boxof` parameter instead")]
+                  [_ (void)]))]
+          [(not p)
+           (add-err! (format "`set_box` on `~a`" box-name)
+                     "the target of `set_box` must be a `Boxof` parameter of this function")]
+          [(and (param-refinement p) (not (trivially-true? (param-refinement p))))
+           (match-define (refinement bound pred) (param-refinement p))
+           (with-handlers ([unsupported?
+                            (lambda (e)
+                              (add-err! (format "`set_box` on `~a`" box-name)
+                                        (unsupported-why e)))])
+             ;; the value's constants stay function-level (the cache
+             ;; below reuses them), but a never-returning call in it
+             ;; excuses only this obligation
+             (define-values (value-t returns)
+               (with-divergence (lambda () (expr->term value-toks env))))
+             ;; the element predicate speaks about the parameters, as at
+             ;; `unbox`, not about whatever a `let` binds at the call
+             (define goal
+               (bool-of (parameterize ([current-allow-calls #f])
+                          (expr->term pred (hash-set (current-param-env) bound value-t)))
+                        "a Boxof element refinement"))
+             (add-obl!
+              (obligation (fn-name f)
+                          (format "set_box on `~a`" box-name)
+                          (assemble (cons returns path-conds) (format "(assert (not ~a))" goal))
+                          (render-claim pred)))
+             ;; After the write this box holds exactly this value, and
+             ;; any OTHER box may be an alias of it, so its cached
+             ;; contents are no longer known.
+             (when (current-unbox-cache)
+               (hash-clear! (current-unbox-cache))
+               (hash-set! (current-unbox-cache) box-name value-t)))]
+          [else (void)])]
+       [_ (add-err! "`set_box`"
+                    "the target of `set_box` must be a `Boxof` parameter named directly")])]
+    ;; constructing a datatype value: each refined field is an obligation
+    [(hash-ref (current-ctor-table) callee-name #f)
+     => (lambda (fields)
+          (when (= (length actuals) (length fields))
             (for ([actual (in-list actuals)]
-                  [cp (in-list (fn-params callee))]
+                  [fld (in-list fields)]
                   [j (in-naturals 1)]
-                  #:when (and (not (param-box-class cp))
-                              (param-refinement cp)
-                              (not (trivially-true? (param-refinement cp)))))
-              (match-define (refinement bound pred) (param-refinement cp))
+                  #:when (and (dfield-refinement fld)
+                              (not (trivially-true? (dfield-refinement fld)))))
+              (match-define (refinement bound pred) (dfield-refinement fld))
               (with-handlers ([unsupported?
                                (lambda (e)
-                                 (add-err! (format "the call to `~a` (argument ~a)" callee-name j)
+                                 (add-err! (format "~a, field `~a`"
+                                                   (dfield-name fld) callee-name)
                                            (unsupported-why e)))])
                 (parameterize ([current-extras (box '())])
-                  (define actual-t (expr->term actual env))
-                  (define arg-env (callee-arg-env callee actuals env))
+                  (define actual-t (at-declared (expr->term actual env) (dfield-base fld) #:in-caller? #t))
+                  (define siblings (sibling-env fields actuals j env))
                   (define goal
                     (bool-of (parameterize ([current-allow-calls #f])
-                               (expr->term pred (hash-set arg-env bound actual-t)))
-                             "a parameter refinement"))
+                               (expr->term pred (hash-set siblings bound actual-t)))
+                             "a datatype field refinement"))
                   (add-obl!
                    (obligation (fn-name f)
-                               (format "call to `~a`, argument ~a" callee-name j)
-                               (assemble path-conds (format "(assert (not ~a))" goal))
-                               (render-claim pred (call-subst callee actuals bound j)))))))]))])))
+                               (format "~a, field `~a`" callee-name (dfield-name fld))
+                               (assemble path-conds
+                                         (format "(assert (not ~a))" goal)) (render-claim pred))))))))]
+    [else
+     (define callee (hash-ref (current-sig-table) callee-name #f))
+     (when callee
+       (cond
+         [(not (= (length actuals) (length (fn-params callee))))
+          (add-err! (format "call to `~a`" callee-name)
+                    "argument count does not match the definition")]
+         [else
+          (for ([actual (in-list actuals)]
+                [cp (in-list (fn-params callee))]
+                [j (in-naturals 1)]
+                #:when (and (not (param-box-class cp))
+                            (param-refinement cp)
+                            (not (trivially-true? (param-refinement cp)))))
+            (match-define (refinement bound pred) (param-refinement cp))
+            (with-handlers ([unsupported?
+                             (lambda (e)
+                               (add-err! (format "call to `~a`, argument ~a" callee-name j)
+                                         (unsupported-why e)))])
+              (parameterize ([current-extras (box '())])
+                (define actual-t (at-declared (expr->term actual env) (param-base cp) #:in-caller? #t))
+                (define arg-env (callee-arg-env callee actuals env))
+                (define goal
+                  (bool-of (parameterize ([current-allow-calls #f])
+                             (expr->term pred (hash-set arg-env bound actual-t)))
+                           "a parameter refinement"))
+                (add-obl!
+                 (obligation (fn-name f)
+                             (format "call to `~a`, argument ~a" callee-name j)
+                             (assemble path-conds (format "(assert (not ~a))" goal))
+                             (render-claim pred (call-subst callee actuals bound j)))))))]))]))
 
 ;; A callee's refinement may mention the callee's other parameters
 ;; (`{r :: Int | r <= c}`).  At a call site those names stand for the
@@ -2413,7 +3024,10 @@
                           [j (in-naturals 1)])
     (cond
       [(param-box-class cp) e]
-      [else (hash-set e (param-name cp) (actual-or-untranslated a j env))])))
+      [else
+       (define t (actual-or-untranslated a j env))
+       (hash-set e (param-name cp)
+                 (if (T? t) (at-declared t (param-base cp) #:in-caller? #t) t))])))
 
 ;; ======================================================================
 ;; DEF obligations
@@ -2430,9 +3044,9 @@
                  [current-prefix prefix]
                  [current-extras prefix])
     (define ok?
-      (validate-refinement! (format "def `~a`" name) r base (hash)
+      (validate-refinement! "definition refinement" r base (hash)
                             (lambda (label why)
-                              (set! errs (cons (list name (format "def `~a`: cannot check ~a: ~a"
+                              (set! errs (cons (list name (format "`~a`, ~a: cannot check: ~a"
                                                                  name label why))
                                                errs)))))
     (when (and ok? r (not (trivially-true? r)))
@@ -2440,10 +3054,10 @@
       (with-handlers ([unsupported?
                        (lambda (e)
                          (set! errs (cons (list name
-                                                (format "def `~a`: cannot check its refinement: ~a"
+                                                (format "`~a`, definition refinement: cannot check: ~a"
                                                         name (unsupported-why e)))
                                           errs)))])
-        (define rhs-t (expr->term rhs-toks (hash)))
+        (define rhs-t (at-declared (expr->term rhs-toks (hash)) base))
         (define goal
           (bool-of (parameterize ([current-allow-calls #f])
                      (expr->term pred (hash bound rhs-t)))
@@ -2561,9 +3175,9 @@
                          (lambda (e)
                            (define why (unsupported-why e))
                            (cond
-                             [(regexp-match #px"^a refinement predicate may not call `([^`]+)`" why)
+                             [(regexp-match #px"^a predicate may not call `([^`]+)`" why)
                               => (lambda (m)
-                                   (format "its right-hand side calls `~a`, and a top-level `def` is modelled only when its right-hand side makes no calls"
+                                   (format "its right-hand side calls `~a`"
                                            (second m)))]
                              [else why]))])
           (parameterize ([current-prefix lines]
@@ -2603,7 +3217,7 @@
                   (top-const (T #f (T-sort t) (T-measures t)
                                 (or (T-src t) (string->symbol (fresh-name (format "~a_def" name)))))
                              (unbox lines))])]
-              [else (unsup "its right-hand side was not found")]))))]
+              [else (internal-error "the right-hand side of a top-level `def` was not found")]))))]
       [_ table])))
 
 (define (top-level-obligations groups anchor-name rdefs)
@@ -2611,7 +3225,7 @@
   (define errs '())
   (define prefix (box '()))
   (define (add-err0! label why [anchor #f])
-    (set! errs (cons (list anchor-name (format "~a: ~a" label why) anchor) errs)))
+    (set! errs (cons (list anchor-name (format "~a: cannot check: ~a" label why) anchor) errs)))
   (define (add-obl0! o) (set! obls (cons o obls)))
   (define add-err! add-err0!)
   (define add-obl! add-obl0!)
@@ -2706,7 +3320,7 @@
         [`(group . ,toks)
          (check-ctor-escape! toks
                              (lambda (fmt . args)
-                               (add-err! "a top-level use of a constructor"
+                               (add-err! "top-level constructor use"
                                          (apply format fmt args))))
          (walk-box-tree toks
                         (lambda (n) #f)
@@ -2717,73 +3331,75 @@
                         (lambda (fmt . as) (void)))
          (for ([c (in-list (find-calls toks env))])
            (match-define (list callee-name actuals path-conds call-env) c)
-           ;; the built-ins `unreachable()` and `assert(P)`
-           (let ([o (with-handlers ([unsupported?
-                                     (lambda (e)
-                                       (add-err! (format "top-level `~a`" callee-name)
-                                                 (unsupported-why e))
-                                       #f)])
-                      (reachability-obligation anchor-name callee-name actuals path-conds call-env))])
-             (when o (add-obl! o)))
-           ;; constructing a datatype value at top level (a locally
-           ;; bound name is not the constructor or function it may shadow)
-           (let ([fields (and (not (hash-ref call-env callee-name #f))
-                              (hash-ref (current-ctor-table) callee-name #f))])
-             (when (and fields (= (length actuals) (length fields)))
+           (parameterize ([current-path (conj (current-path) (conj* path-conds))])
+             ;; the built-ins `unreachable()` and `assert(P)`
+             (let ([o (with-handlers ([unsupported?
+                                       (lambda (e)
+                                         (add-err! (format "top-level `~a`" callee-name)
+                                                   (unsupported-why e))
+                                         #f)])
+                        (reachability-obligation anchor-name callee-name actuals path-conds call-env))])
+               (when o (add-obl! o)))
+             ;; constructing a datatype value at top level (a locally
+             ;; bound name is not the constructor or function it may shadow)
+             (let ([fields (and (not (hash-ref call-env callee-name #f))
+                                (hash-ref (current-ctor-table) callee-name #f))])
+               (when (and fields (= (length actuals) (length fields)))
+                 (for ([actual (in-list actuals)]
+                       [fld (in-list fields)]
+                       [j (in-naturals 1)]
+                       #:when (and (dfield-refinement fld)
+                                   (not (trivially-true? (dfield-refinement fld)))))
+                   (match-define (refinement bound pred) (dfield-refinement fld))
+                   (with-handlers ([unsupported?
+                                    (lambda (e)
+                                      (add-err! (format "top-level ~a, field `~a`"
+                                                        callee-name (dfield-name fld))
+                                                (unsupported-why e)))])
+                     (parameterize ([current-extras (box '())])
+                       (define actual-t (at-declared (expr->term actual call-env) (dfield-base fld) #:in-caller? #t))
+                       (define siblings (sibling-env fields actuals j call-env))
+                       (define goal
+                         (bool-of (parameterize ([current-allow-calls #f])
+                                    (expr->term pred (hash-set siblings bound actual-t)))
+                                  "a datatype field refinement"))
+                       (add-obl!
+                        (obligation anchor-name
+                                    (format "top-level ~a, field `~a`"
+                                            callee-name (dfield-name fld))
+                                    (assemble path-conds
+                                              (format "(assert (not ~a))" goal)) (render-claim pred))))))))
+             (define callee (and (not (hash-ref call-env callee-name #f))
+                                 (hash-ref (current-sig-table) callee-name #f)))
+             (when (and callee (= (length actuals) (length (fn-params callee))))
                (for ([actual (in-list actuals)]
-                     [fld (in-list fields)]
+                     [cp (in-list (fn-params callee))]
                      [j (in-naturals 1)]
-                     #:when (and (dfield-refinement fld)
-                                 (not (trivially-true? (dfield-refinement fld)))))
-                 (match-define (refinement bound pred) (dfield-refinement fld))
+                     #:when (and (not (param-box-class cp))
+                                 (param-refinement cp)
+                                 (not (trivially-true? (param-refinement cp)))))
+                 (match-define (refinement bound pred) (param-refinement cp))
                  (with-handlers ([unsupported?
                                   (lambda (e)
-                                    (add-err! (format "top-level `~a`, field `~a`"
-                                                      callee-name (dfield-name fld))
+                                    (add-err! (format "top-level call to `~a`, argument ~a"
+                                                      callee-name j)
                                               (unsupported-why e)))])
                    (parameterize ([current-extras (box '())])
-                     (define actual-t (expr->term actual call-env))
-                     (define siblings (sibling-env fields actuals j call-env))
+                     (define actual-t (at-declared (expr->term actual call-env) (param-base cp) #:in-caller? #t))
+                     (define arg-env (callee-arg-env callee actuals call-env))
                      (define goal
                        (bool-of (parameterize ([current-allow-calls #f])
-                                  (expr->term pred (hash-set siblings bound actual-t)))
-                                "a datatype field refinement"))
+                                  (expr->term pred (hash-set arg-env bound actual-t)))
+                                "a parameter refinement"))
                      (add-obl!
                       (obligation anchor-name
-                                  (format "top-level ~a, field `~a`"
-                                          callee-name (dfield-name fld))
-                                  (assemble path-conds
-                                            (format "(assert (not ~a))" goal)) (render-claim pred))))))))
-           (define callee (and (not (hash-ref call-env callee-name #f))
-                               (hash-ref (current-sig-table) callee-name #f)))
-           (when (and callee (= (length actuals) (length (fn-params callee))))
-             (for ([actual (in-list actuals)]
-                   [cp (in-list (fn-params callee))]
-                   [j (in-naturals 1)]
-                   #:when (and (not (param-box-class cp))
-                               (param-refinement cp)
-                               (not (trivially-true? (param-refinement cp)))))
-               (match-define (refinement bound pred) (param-refinement cp))
-               (with-handlers ([unsupported?
-                                (lambda (e)
-                                  (add-err! (format "top-level call to `~a` (argument ~a)"
-                                                    callee-name j)
-                                            (unsupported-why e)))])
-                 (parameterize ([current-extras (box '())])
-                   (define actual-t (expr->term actual call-env))
-                   (define arg-env (callee-arg-env callee actuals call-env))
-                   (define goal
-                     (bool-of (parameterize ([current-allow-calls #f])
-                                (expr->term pred (hash-set arg-env bound actual-t)))
-                              "a parameter refinement"))
-                   (add-obl!
-                    (obligation anchor-name
-                                (format "top-level call to `~a`, argument ~a" callee-name j)
-                                (assemble path-conds (format "(assert (not ~a))" goal))
-                                (render-claim pred (call-subst callee actuals bound j)))))))))
+                                  (format "top-level call to `~a`, argument ~a" callee-name j)
+                                  (assemble path-conds (format "(assert (not ~a))" goal))
+                                  (render-claim pred (call-subst callee actuals bound j))))))))))
          ;; bind after checking, so a def cannot refer to itself
          (match toks
            [(list-rest 'def (? symbol? name) rest)
+            #:when (not (eq? name 'values))
             (define eq-pos
               (for/first ([t (in-list rest)] [i (in-naturals)]
                           #:when (equal? t '(op =)))
@@ -2966,10 +3582,13 @@
   (cons (format "(inv_~a ((v ~a)) Bool)" tname tname)
         (format "(match v (~a))" (string-join cases " "))))
 
-;; Assume the invariant of a datatype-typed term.
+;; Assume the invariant of a datatype-typed term; of a character, that
+;; it is a code point (so a counterexample shows a character).
 (define (assume-invariant! t push)
   (when (and (data-sort? (T-sort t)) (T-smt t))
-    (push (format "(assert (inv_~a ~a))" (cadr (T-sort t)) (T-smt t)))))
+    (push (guarded-assert (format "(inv_~a ~a)" (cadr (T-sort t)) (T-smt t)))))
+  (when (and (eq? (T-sort t) 'char) (T-smt t))
+    (push (format "(assert (char_ok ~a))" (T-smt t)))))
 
 (define (verify-module* fun-recs def-recs ctors-tl measure-recs pending-funs pending-defs interaction-groups)
   ;; Measures are parsed first, so that every predicate can call them.
@@ -2979,7 +3598,7 @@
       (with-handlers ([unsupported?
                        (lambda (e)
                          (define nm (match (tl->list rec) [(cons name _) (id-sym name)]))
-                         (values ms (cons (list nm (format "measure `~a`: ~a" nm (unsupported-why e)))
+                         (values ms (cons (list nm (format "`~a`, measure: cannot check: ~a" nm (unsupported-why e)))
                                           errs)))])
         (values (cons (parse-measure-record rec) ms) errs))))
   (parameterize ([current-measure-table (for/hash ([m (in-list measures)]) (values (measure-name m) m))])
@@ -2989,7 +3608,7 @@
         (with-handlers ([unsupported?
                          (lambda (e)
                            (values ds (cons (list (measure-name m)
-                                                  (format "measure `~a`: ~a" (measure-name m) (unsupported-why e)))
+                                                  (format "`~a`, measure: cannot check: ~a" (measure-name m) (unsupported-why e)))
                                             errs)))])
           (define-values (header body) (measure-definition m))
           (values (cons (cons header body) ds) errs))))
@@ -3025,7 +3644,7 @@
                        (lambda (e)
                          (define nm (match (tl->list rec)
                                       [(cons name _) (id-sym name)]))
-                         (values fns (cons (list nm (format "fun `~a`: ~a" nm (unsupported-why e)))
+                         (values fns (cons (list nm (format "`~a`: cannot check: ~a" nm (unsupported-why e)))
                                            errs)))])
         (values (cons (parse-fun-record rec) fns) errs))))
   (define-values (rdefs rdef-errs)
@@ -3035,7 +3654,7 @@
                        (lambda (e)
                          (define nm (match (tl->list rec)
                                       [(cons name _) (id-sym name)]))
-                         (values ds (cons (list nm (format "def `~a`: ~a" nm (unsupported-why e)))
+                         (values ds (cons (list nm (format "`~a`: cannot check: ~a" nm (unsupported-why e)))
                                           errs)))])
         (values (cons (parse-def-record rec) ds) errs))))
   ;; In an interaction the groups are the form typed at the prompt and
@@ -3076,7 +3695,38 @@
     (parameterize ([current-box-defs box-def-table]
                    [current-top-consts (compute-top-consts groups rdefs)])
       (define all-obls '())
-      (define all-errs (append rec-errs rdef-errs
+      ;; Eager declaration check of datatype field predicates: one the
+      ;; checker cannot read is reported where it is written, not at the
+      ;; first construction.  The other fields of the constructor are in
+      ;; scope, as they are at a construction.
+      (define field-errs
+        (if interaction?
+            '()
+            (for*/list ([(ctor fields) (in-hash (current-ctor-table))]
+                        [f (in-list fields)]
+                        [why (in-value
+                              (and (dfield-refinement f)
+                                   (not (trivially-true? (dfield-refinement f)))
+                                   (with-handlers ([unsupported? unsupported-why])
+                                     (define env
+                                       (for/fold ([e (hash)]) ([g (in-list fields)])
+                                         (define srt (field-sort g))
+                                         (hash-set e (dfield-name g)
+                                                   (if (sort-smt srt)
+                                                       (t-of (symbol->string (dfield-name g)) srt (dfield-name g))
+                                                       (t-opaque-typed (dfield-base g) (dfield-name g))))))
+                                     (match-define (refinement bound pred) (dfield-refinement f))
+                                     (parameterize ([current-allow-calls #f]
+                                                    [current-extras (box '())]
+                                                    [current-prefix (box '())]
+                                                    [current-measure-cache (make-hash)]
+                                                    [current-unbox-cache (make-hash)])
+                                       (bool-of (expr->term pred (hash-set env bound (hash-ref env (dfield-name f))))
+                                                "a datatype field refinement"))
+                                     #f)))]
+                        #:when why)
+              (list ctor (format "~a, field `~a`: cannot check: ~a" ctor (dfield-name f) why)))))
+      (define all-errs (append rec-errs rdef-errs field-errs
                                (for/list ([m (in-list box-def-errs)])
                                  (list anchor-name m))))
       (for ([f (in-list fns)]
@@ -3100,7 +3750,11 @@
           (with-handlers ([unsupported?
                            (lambda (e)
                              (cons (list (obligation-owner o)
-                                         (format "~a: ~a" (obligation-owner o) (unsupported-why e))
+                                         (format "~a~a: cannot check: ~a"
+                                                 (if (eq? (obligation-owner o) 'module)
+                                                     ""
+                                                     (format "`~a`, " (obligation-owner o)))
+                                                 (obligation-label o) (unsupported-why e))
                                          (obligation-anchor o))
                                    acc))])
             (define-values (verdict model) (run-z3 (obligation-program o) (obligation-label o)))

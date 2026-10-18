@@ -1,0 +1,18 @@
+#lang shplait/liquid
+
+// An `if` expression whose arms are strings or lists: its measures are
+// those of the arm taken.
+fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+  string_get(s, i)
+
+fun pick(b :: Boolean, s :: String, t :: String) :: {r :: String | string_length(r) >= 0}:
+  if b | s | t
+
+fun longer(s :: String, t :: String) :: {r :: Int | r >= string_length(s) && r >= string_length(t)}:
+  string_length(if string_length(s) > string_length(t) | s | t)
+
+fun first_char(b :: Boolean, {s :: String | string_length(s) > 0}, {t :: String | string_length(t) > 0}) :: Char:
+  safe_get(if b | s | t, 0)
+
+fun lst(b :: Boolean, l :: Listof(Int)) :: {r :: Int | r >= 0}:
+  length(if b | l | cons(1, l))

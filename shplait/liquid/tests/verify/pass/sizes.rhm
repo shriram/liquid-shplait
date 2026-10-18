@@ -1,0 +1,53 @@
+#lang shplait/liquid
+
+// The checker knows the sizes of the results of some built-ins: arrays
+// (make_array, Array), strings (string_append, substring) and lists
+// (append, reverse, map, rest, filter).
+
+type Matrix
+| matrix(rows :: {r :: Int | r >= 0},
+         cols :: {c :: Int | c >= 0},
+         cells :: {a :: Arrayof(Int) | array_length(a) == rows * cols})
+
+fun make({r :: Int | r >= 0}, {c :: Int | c >= 0}) :: Matrix:
+  matrix(r, c, make_array(r * c, 0))
+
+fun safe_ref(a :: Arrayof(Int), {i :: Int | i >= 0 && i < array_length(a)}) :: Int:
+  a[i]
+
+fun three() :: {n :: Int | n == 3}:
+  array_length(Array(1, 2, 3))
+
+fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+  string_get(s, i)
+
+fun get_cat(s :: String, t :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+  safe_get(string_append(s, t), i)
+
+fun one_char(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: {n :: Int | n == 1}:
+  string_length(substring(s, i, i + 1))
+
+fun appended(l :: Listof(Int), m :: Listof(Int)) :: {n :: Int | n == length(l) + length(m)}:
+  length(append(l, m))
+
+fun reversed(l :: Listof(Int)) :: {n :: Int | n == length(l)}:
+  length(reverse(l))
+
+fun mapped(l :: Listof(Int)) :: {n :: Int | n == length(l)}:
+  length(map(fun (x): x + 1, l))
+
+fun rested({l :: Listof(Int) | length(l) > 0}) :: {n :: Int | n == length(l) - 1}:
+  length(rest(l))
+
+fun filtered(l :: Listof(Int)) :: {n :: Int | n <= length(l)}:
+  length(filter(fun (x): x > 0, l))
+
+check:
+  safe_ref(Array(4, 5, 6), 2)
+  ~is 6
+check:
+  get_cat("hello", "world", 1)
+  ~is Char"e"
+check:
+  rested([1, 2, 3])
+  ~is 2

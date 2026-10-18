@@ -1,0 +1,120 @@
+#lang shplait/liquid
+
+// `Optionof` values: `none()`, `some(e)`, `match` on them, and
+// `is_none`/`is_some` in predicates and bodies.
+
+fun safe_div(n :: Int, {d :: Int | d != 0}) :: Int:
+  n / d
+
+fun try_div(n :: Int, d :: Int) :: {o :: Optionof(Int) | is_none(o) == (d == 0)}:
+  if d == 0
+  | none()
+  | some(safe_div(n, d))
+
+fun get_or(o :: Optionof(Int), dflt :: Int) :: {r :: Int | is_none(o) || r != dflt || some(dflt) == o}:
+  match o
+  | none(): dflt
+  | some(v): v
+
+fun content({o :: Optionof(Int) | is_some(o)}) :: Int:
+  match o
+  | none(): unreachable()
+  | some(v): v
+
+fun use_try(n :: Int) :: Int:
+  content(try_div(n, 3))
+
+// A component the checker does not model (a string) is unknown, but the
+// option around it is not.
+fun named(s :: String) :: {o :: Optionof(String) | is_some(o)}:
+  some(s)
+
+fun str_len(o :: Optionof(String)) :: {r :: Int | r >= 0}:
+  match o
+  | none(): 0
+  | some(s): string_length(s)
+
+// The refinements of a datatype inside an option hold.
+type Pos
+| pos(v :: {p :: Int | p > 0})
+
+fun pos_val(o :: Optionof(Pos)) :: {r :: Int | r > 0}:
+  match o
+  | none(): 1
+  | some(p):
+      match p
+      | pos(x): x
+
+// An option as a datatype's field, refined, and recursively.
+type Slot
+| slot(content :: {o :: Optionof(Int) | is_some(o)})
+
+fun mk_slot(n :: Int) :: Slot:
+  slot(some(n))
+
+fun slot_val(s :: Slot) :: Int:
+  match s
+  | slot(o):
+      match o
+      | none(): unreachable()
+      | some(v): v
+
+type Tree
+| leaf()
+| node(kid :: Optionof(Tree), n :: {k :: Int | k >= 0})
+
+fun tree_n(t :: Tree) :: {r :: Int | r >= 0}:
+  match t
+  | leaf(): 0
+  | node(k, n): n
+
+// The option a builtin returns: its element is a value of the type its
+// use needs.
+fun mg(m :: Mapof(Int, Int), k :: Int) :: {r :: Int | r >= 0}:
+  match map_get(m, k)
+  | none(): 0
+  | some(v): max(v, 0)
+
+// Type variables inside an option are instantiated at a call.
+fun get_or_p(o :: Optionof(?a), d :: ?a) :: {r :: ?a | r == d || o == some(r)}:
+  match o
+  | none(): d
+  | some(v): v
+
+fun use_p(n :: Int) :: {r :: Int | r < 5}:
+  get_or_p(some(3), 4)
+
+fun wrap(x :: ?a) :: {o :: Optionof(?a) | o == some(x)}:
+  some(x)
+
+fun wrap_int(n :: Int) :: {o :: Optionof(Int) | o == some(n)}:
+  wrap(n)
+
+// A refined top-level definition, and a measure that tests an option.
+def three :: {x :: Optionof(Int) | is_some(x)} = some(3)
+
+type Box2
+| bx(c :: Optionof(Int))
+
+measure fun has(b :: Box2) :: Boolean:
+  match b
+  | bx(c): is_some(c)
+
+fun need({b :: Box2 | has(b)}) :: Int:
+  1
+
+fun call_need() :: Int:
+  need(bx(some(1)))
+
+check:
+  try_div(6, 3)
+  ~is some(2)
+check:
+  is_some(none())
+  ~is #false
+check:
+  is_none(none())
+  ~is #true
+check:
+  slot_val(mk_slot(4))
+  ~is 4

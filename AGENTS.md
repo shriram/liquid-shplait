@@ -37,9 +37,13 @@ The package `liquid-shplait` is a multi-collection package that adds
    program's own names. All failures in a module are reported together, as
    one compile-time error.
 
-Every translated expression carries a sort (integer, boolean, a module
-datatype, or opaque for values the checker does not model), so sort errors
-are reported by the checker rather than sent to Z3.
+Every translated expression carries a sort (integer, Boolean, symbol,
+character, a module datatype, an option, a pair, or opaque for values the
+checker does not model), so sort errors
+are reported by the checker rather than sent to Z3. Options and pairs are
+the parametric SMT datatypes `%Option` and `%Pair`, declared in the
+preamble; their constructors are written with their sorts
+(`(as %some S)`), which Z3 needs once a module datatype nests one.
 
 ## Rules the implementation keeps
 

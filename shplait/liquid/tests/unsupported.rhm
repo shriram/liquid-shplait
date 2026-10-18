@@ -13,7 +13,7 @@ check_rejects:
   def doubler = (fun (x :: { n :: Int | n > 0 }) :: Int: x * 2)
 
   doubler(4)
-  ~throws "refinement braces are only checked"
+  ~throws "refinements are allowed only on `fun` parameters and results"
 
 // anonymous_fun_refined_param
 //
@@ -24,25 +24,14 @@ check_rejects:
     let x = n * n + 1:
       let g = (fun ({y :: Int | y > x}): y - x):
         g(x + 1)
-  ~throws "refinements on an anonymous `fun` are not checked"
+  ~throws "refinements are not allowed on an anonymous `fun`"
 
 // anonymous_fun_refined_return
 //
 // A refined return type on an anonymous function.
 check_rejects:
   def g = fun (y :: Int) :: {r :: Int | r > 0}: y * y + 1
-  ~throws "refinements on an anonymous `fun` are not checked"
-
-// call_through_local_function
-//
-// A claim that depends on the result of a function defined inside
-// the function: the checker does not follow calls to it.
-check_rejects:
-  fun f(n :: Int) :: {r :: Int | r > 0}:
-    fun g(y :: Int) :: Int:
-      y * y + 1
-    g(n)
-  ~throws "`g` is a function defined inside another definition"
+  ~throws "refinements are not allowed on an anonymous `fun`"
 
 // constructor_as_value
 //
@@ -56,33 +45,34 @@ check_rejects:
 
   fun build(xs :: Listof(Int)) :: Listof(Pos):
     map(pos, xs)
-  ~throws "may be used only as a direct call"
+  ~throws "must be called directly"
 
 // dependent_arg_failed_local
 //
-// As dependent_arg_unmodelled below, with the unmodelled
+// As dependent_arg_unmodeled below, with the unmodeled
 // call behind a local `def`.
 check_rejects:
   fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
     string_get(s, i)
 
-  fun g2(a :: String, b :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
-    def u = string_append(a, b)
+  fun g3(a :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
+    def u = (fun (x :: String): x)(a)
     safe_get(u, i)
-  ~throws "this refinement depends on argument 1 (`u`), which the checker cannot analyze: local definition `u` cannot be checked: call to `string_append`"
+  ~throws "this refinement depends on argument 1 (`u`), which cannot be analyzed: local definition `u` cannot be checked: an anonymous `fun` cannot be used as a value here"
 
-// dependent_arg_unmodelled
+// dependent_arg_unmodeled
 //
 // `safe_get`'s refinement on `i` mentions `s`, whose actual here is a
-// call the checker does not model.  This fails closed, with a message
+// call the checker does not follow (to an anonymous function).  This
+// fails closed, with a message
 // naming the argument and the reason.
 check_rejects:
   fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
     string_get(s, i)
 
-  fun g2(a :: String, b :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
-    safe_get(string_append(a, b), i)
-  ~throws "this refinement depends on argument 1 (`string_append(a, b)`), which the checker cannot analyze: call to `string_append`"
+  fun g2(a :: String, {i :: Int | i >= 0 && i < string_length(a)}) :: Char:
+    safe_get((fun (x :: String): x)(a), i)
+  ~throws "which cannot be analyzed: an anonymous `fun` cannot be used as a value here"
 
 // error_in_predicate
 //
@@ -91,7 +81,7 @@ check_rejects:
 check_rejects:
   fun f({n :: Int | n > 0 || error(#'f, "no")}) :: Int:
     n
-  ~throws "a refinement predicate may not call `error`"
+  ~throws "a predicate may not call `error`"
 
 // internal_fun_refined
 //
@@ -103,7 +93,7 @@ check_rejects:
     fun g({y :: Int | y > x}) :: {r :: Int | r > 0}:
       y - x
     g(x + 1)
-  ~throws "function `g` is defined inside another definition"
+  ~throws "function `g` is not one"
 
 // internal_fun_returned_refined
 //
@@ -114,7 +104,7 @@ check_rejects:
     fun add({y :: Int | y > 0}) :: {r :: Int | r > n}:
       y + n
     add
-  ~throws "function `add` is defined inside another definition"
+  ~throws "function `add` is not one"
 
 // internal_fun_uses_box
 //
@@ -127,7 +117,7 @@ check_rejects:
       set_box(b, 0)
     reset()
     unbox(b)
-  ~throws "may not use that function's `Boxof` parameter `b`"
+  ~throws "may not use the enclosing function's `Boxof` parameter `b`"
 
 // internal_measure
 //
@@ -150,7 +140,7 @@ check_rejects:
   fun f(n :: Int) :: Int:
     let m :: {k :: Int | k > 0} = n * n + 1:
       m
-  ~throws "a `let` binding cannot carry a type or a refinement"
+  ~throws "a `let` binding cannot have a type"
 
 // let_refined
 //
@@ -159,7 +149,7 @@ check_rejects:
   fun f(n :: Int) :: Int:
     let {m :: Int | m > 0} = n * n + 1:
       m
-  ~throws "a `let` binding cannot carry a refinement"
+  ~throws "a `let` binding cannot have a refinement"
 
 // let_shadows
 //
@@ -171,7 +161,7 @@ check_rejects:
       b
   ~throws "`let b` shadows a `Boxof` parameter; rename it"
 
-// let_unmodelled_used
+// let_unmodeled_used
 //
 // A `let` whose right-hand side the checker cannot model is fine
 // until a claim needs its variable; then the message says why.
@@ -180,9 +170,9 @@ check_rejects:
     k
 
   fun f(n :: Int) :: Int:
-    let s = to_string(n):
+    let s = (fun (m :: Int): to_string(m))(n):
       pos(string_length(s))
-  ~throws "`let`-bound `s` cannot be checked: call to `to_string`"
+  ~throws "`let`-bound `s` cannot be checked: an anonymous `fun` cannot be used as a value here"
 
 // listof_element
 //
@@ -194,7 +184,7 @@ check_rejects:
     match lst:
     | []: 0
     | cons(hd, tl): 1 + length_pos(tl)
-  ~throws "refinement braces are only checked"
+  ~throws "refinements are allowed only on `fun` parameters and results"
 
 // local_def_refined
 //
@@ -204,7 +194,7 @@ check_rejects:
   fun f(n :: Int) :: Int:
     def m :: {k :: Int | k > 0} = n * n + 1
     m
-  ~throws "`def m` is defined inside another definition"
+  ~throws "`def m` is not one"
 
 // local_shadowing
 //
@@ -221,7 +211,7 @@ check_rejects:
 // Element refinements inside Mapof are not supported.
 check_rejects:
   def prices :: Mapof(String, { n :: Int | n > 0 }) = {"latte": 5, "muffin": 3}
-  ~throws "refinement braces are only checked"
+  ~throws "refinements are allowed only on `fun` parameters and results"
 
 // measure_else_clause
 check_rejects:
@@ -253,7 +243,7 @@ check_rejects:
   measure fun count(b :: Bag) :: Int:
     match b
     | bag(items): length(items)
-  ~throws "`length` cannot be used inside a measure"
+  ~throws "a measure may not use `length`"
 
 // needs_induction_times_out
 //
@@ -279,7 +269,7 @@ check_rejects:
 
   fun average_positive({l :: IntList | all_positive(l)}, {n :: Int | n > 0}) :: Int:
     average(l, n)
-  ~throws "gave up on obligation `call to `average`, argument 1`"
+  ~throws "`average_positive`, call to `average`, argument 1: cannot check: Z3 timed out after 10 seconds"
 
 // nested_listof_element
 //
@@ -291,7 +281,7 @@ check_rejects:
     match lst:
     | []: d
     | cons(hd, tl): hd
-  ~throws "refinement braces are only checked"
+  ~throws "refinements are allowed only on `fun` parameters and results"
 
 // no_spurious_return_violation
 //
@@ -306,7 +296,7 @@ check_rejects:
   fun day_of_year({m :: Int | m >= 1 && m <= 12}, {d :: Int | d >= 1 && d <= days_in_month(m)})
       :: {y :: Int | y >= 1 && y <= 366}:
     (m - 1) * 31 + d
-  ~throws "a refinement predicate may not call `days_in_month`"
+  ~throws "a predicate may not call `days_in_month`"
 
 // predicate_calls_function
 //
@@ -319,7 +309,7 @@ check_rejects:
 
   fun half({m :: Int | is_even(m)}) :: Int:
     m / 2
-  ~throws "a refinement predicate may not call `is_even`"
+  ~throws "a predicate may not call `is_even`"
 
 // predicate_calls_shadowed_builtin
 //
@@ -331,17 +321,17 @@ check_rejects:
 
   fun top(a :: Int, b :: Int) :: {y :: Int | y == max(a, b)}:
     if a > b | a | b
-  ~throws "a refinement predicate may not call `max`"
+  ~throws "a predicate may not call `max`"
 
 // string_measure_only
 //
-// A String is not modelled, so it can be spoken about only through
+// A String is not modeled, so it can be spoken about only through
 // `string_length`.  Comparing two strings in a refinement is an
 // error, not a silently-accepted claim.
 check_rejects:
   fun greet({s :: String | s == "hi"}) :: String:
     s
-  ~throws "is not checked on this type"
+  ~throws "is not supported on"
 
 // string_refinement
 //
@@ -356,7 +346,7 @@ check_rejects:
 // top_def_call
 //
 // A top-level def whose right-hand side calls a function is not
-// modelled, so a refinement that mentions it fails closed.
+// modeled, so a refinement that mentions it fails closed.
 check_rejects:
   fun double(n :: Int) :: {r :: Int | r == 2 * n}:
     2 * n
@@ -370,9 +360,58 @@ check_rejects:
 // unknown_callee
 //
 // A call the checker has no specification for, in a position that
-// carries a claim, is an error naming the callee.  Nothing about
-// `list_get` is assumed.
+// carries a claim, is an error naming the callee.  An anonymous
+// function applied directly has none.
 check_rejects:
   fun pick({xs :: Listof(Int) | true}) :: { y :: Int | y > 0 }:
-    list_get(xs, 0)
-  ~throws "neither a function defined in this module nor one of the builtins"
+    (fun (l :: Listof(Int)): 1)(xs)
+  ~throws "an anonymous `fun` cannot be used as a value here"
+
+// measure_wrong_kind_field
+//
+// A measure applies to one kind of value: `length` to lists.  A field
+// predicate that applies it to an array is rejected where it is
+// written, before any construction.
+check_rejects:
+  type Matrix
+  | matrix(rows :: {r :: Int | r >= 0},
+           cols :: {c :: Int | c >= 0},
+           cells :: {a :: Arrayof(Int) | length(a) == rows * cols})
+  ~throws "matrix, field `cells`: cannot check: `length` applies to a list, but was given a value of type `Arrayof(Int)`"
+
+// measure_wrong_kind_param
+//
+// The same for a parameter: `string_length` applies to strings.
+check_rejects:
+  fun f({xs :: Listof(Int) | string_length(xs) > 0}) :: Int:
+    0
+  ~throws "`string_length` applies to a string, but was given a value of type `Listof(Int)`"
+
+// pair_measure_on_option
+//
+// `fst` and `snd` apply to pairs.
+check_rejects:
+  fun f({o :: Optionof(Int) | fst(o) > 0}) :: Int:
+    0
+  ~throws "`fst` needs a pair but got an option"
+
+// option_test_on_integer
+check_rejects:
+  fun f({n :: Int | is_some(n)}) :: Int:
+    0
+  ~throws "`is_some` needs an option but got an integer"
+
+// nested_def_shadows
+//
+// A local `def` in a nested block may not shadow a parameter either:
+// the call after it would otherwise be checked against the parameter.
+check_rejects:
+  fun safe_div(n :: Int, {d :: Int | d != 0}) :: Int:
+    n / d
+
+  fun s({n :: Int | n > 0}) :: Int:
+    if n > 0
+    | def n = 0
+      safe_div(10, n)
+    | 0
+  ~throws "local `def n` shadows a parameter or an earlier local definition; rename it"

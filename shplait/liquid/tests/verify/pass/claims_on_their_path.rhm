@@ -1,0 +1,38 @@
+#lang shplait/liquid
+
+// A callee's return claim is assumed on the path that makes the call,
+// in a branch, a `cond` clause, a `match` clause or a `let`.
+
+fun five_if_nonzero(d :: Int) :: {r :: Int | d != 0 && r == 5}:
+  if d == 0
+  | error(#'five_if_nonzero, "zero")
+  | 5
+
+fun via_if(d :: Int) :: {r :: Int | r == 5}:
+  if d == 0
+  | 5
+  | five_if_nonzero(d)
+
+fun via_cond(d :: Int) :: {r :: Int | r == 5}:
+  cond
+  | d == 0: 5
+  | ~else: five_if_nonzero(d)
+
+fun via_match(l :: Listof(Int), d :: Int) :: {r :: Int | r == 5}:
+  match l
+  | []: 5
+  | cons(h, t): five_if_nonzero(d)
+
+fun via_let(d :: Int) :: {r :: Int | r == 5}:
+  if d == 0
+  | 5
+  | let x = five_if_nonzero(d):
+      x
+
+fun via_statement(d :: Int) :: {r :: Int | d != 0}:
+  def x = five_if_nonzero(d)
+  x
+
+check:
+  via_if(3)
+  ~is 5

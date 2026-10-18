@@ -48,9 +48,9 @@
                (list "let k = 0: twice(k)" "the claim `k > 0` is violated")
                (list "def k2 = (let y = 2: y * 2)" "")
                ;; refinements below the top level are rejected at the prompt too
-               (list "let {k :: Int | k > 0} = 3: k" "a `let` binding cannot carry a refinement")
+               (list "let {k :: Int | k > 0} = 3: k" "a `let` binding cannot have a refinement")
                (list "fun outer(n :: Int) :: Int:\n  fun g({y :: Int | y > 0}) :: Int: y\n  g(1)"
-                     "function `g` is defined inside another definition")
+                     "function `g` is not one")
                (list "fun bad({n :: Int | n > 0}) :: {m :: Int | m > n}: n" "the claim `m > n` is violated")
                ;; the reachability built-ins at the prompt
                (list "unreachable()" "call to `unreachable()`: it is reached")
