@@ -842,7 +842,7 @@ check_rejects:
   fun wrong_part(s :: String, t :: String,
                  {i :: Int | i >= 0 && i < string_length(s) + string_length(t)}) :: Char:
     safe_get(s, i)
-  ~throws "`wrong_part`, call to `safe_get`, argument 2: the claim `i >= 0 && i < string_length(s)` is violated when i = 0, string_length(s) = 0"
+  ~throws "`wrong_part`, call to `safe_get`, argument 2: the claim `i >= 0 && i < string_length(s)` is violated when i = "
 
 // builtin_result_unconstrained
 //
@@ -870,11 +870,11 @@ check_rejects:
 
 // nested_builtin_unconstrained
 //
-// Measures apply to unmodeled built-ins' results, but are unknown.
+// An unmodeled built-in's result is unknown, even when it is a string.
 check_rejects:
   fun pos(s :: String) :: {r :: Int | r > 0}:
     string_length(to_string(string_get(s, 0)))
-  ~throws "violated when string_length(to_string(...)) = 0"
+  ~throws "violated when to_string(...) = \"\""
 
 // local_function_result_unknown
 //
@@ -1233,9 +1233,48 @@ check_rejects:
 
   fun first_char(b :: Boolean, {s :: String | string_length(s) > 0}, t :: String) :: Char:
     safe_get(if b | s | t, 0)
-  ~throws "violated when b = #false, string_length(s) = 1, string_length(t) = 0"
+  ~throws "violated when b = #false, s = "
 
 check_rejects:
   fun lst(b :: Boolean, l :: Listof(Int)) :: {r :: Int | r > 0}:
     length(if b | l | cons(1, l))
   ~throws "`lst`, return: the claim `r > 0` is violated when b = #true, length(l) = 0"
+
+// string_equality_branch
+//
+// `==` on strings is modeled; the counterexample shows the string.
+check_rejects:
+  fun str_tag({str :: String | str == "a" || str == "b"}) :: {s :: String | s == "a"}:
+    if str == "b"
+    | "b"
+    | str
+  ~throws "`str_tag`, return [branch 1]: the claim `s == \"a\"` is violated when str = \"b\""
+
+// string_get_empty
+check_rejects:
+  fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+    string_get(s, i)
+
+  fun bad_index(name :: String) :: Char:
+    safe_get(name, 0)
+  ~throws "the claim `0 >= 0 && 0 < string_length(name)` is violated when name = \"\""
+
+// substring_value
+check_rejects:
+  fun mid() :: {t :: String | t == "elo"}:
+    substring("hello", 1, 4)
+  ~throws "`mid`, return: the claim `t == \"elo\"` is violated"
+
+// string_non_ascii
+//
+// A literal with a character outside ASCII is the string of that
+// character, and a counterexample shows it as written.
+check_rejects:
+  fun uni() :: {s :: String | s == "λ"}:
+    "l"
+  ~throws "`uni`, return: the claim `s == \"λ\"` is violated"
+
+check_rejects:
+  fun f(s :: String) :: {b :: Boolean | b}:
+    s != "é\n"
+  ~throws "violated when s = \"é\\n\""

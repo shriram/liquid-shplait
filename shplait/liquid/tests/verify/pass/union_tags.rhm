@@ -1,0 +1,126 @@
+#lang shplait/liquid
+
+// A union type as a datatype with measures, narrowed by tests on its
+// tag; and a string parameter restricted to two values.  Thanks to
+// Ellie Chen for this example, which showed that strings were not
+// supported.
+
+type Val
+| v_num(num :: Int)
+| v_str(str :: String)
+| v_pair(l :: Val, r :: Val)
+| v_null()
+
+measure fun is_num(val :: Val) :: Boolean:
+  match val:
+  | v_num(num): #true
+  | v_str(str): #false
+  | v_pair(l, r): #false
+  | v_null(): #false
+
+measure fun is_str(val :: Val) :: Boolean:
+  match val:
+  | v_num(num): #false
+  | v_str(str): #true
+  | v_pair(l, r): #false
+  | v_null(): #false
+
+measure fun is_pair(val :: Val) :: Boolean:
+  match val:
+  | v_num(num): #false
+  | v_str(str): #false
+  | v_pair(l, r): #true
+  | v_null(): #false
+
+measure fun is_null(val :: Val) :: Boolean:
+  match val:
+  | v_num(num): #false
+  | v_str(str): #false
+  | v_pair(l, r): #false
+  | v_null(): #true
+
+measure fun tagof(val :: Val) :: Symbol:
+  match val:
+  | v_num(num): #'number
+  | v_str(str): #'string
+  | v_pair(l, r): #'pair
+  | v_null(): #'null
+
+measure fun pair_left(val :: Val) :: Val:
+  match val:
+  | v_num(num): v_null()
+  | v_str(str): v_null()
+  | v_pair(l, r): l
+  | v_null(): v_null()
+
+measure fun pair_right(val :: Val) :: Val:
+  match val:
+  | v_num(num): v_null()
+  | v_str(str): v_null()
+  | v_pair(l, r): r
+  | v_null(): v_null()
+
+fun unreachable({why :: String | false}) :: ?a:
+  error(#'interp, why)
+
+// add is (number, number) -> number
+fun add({val1 :: Val | is_num(val1)}, {val2 :: Val | is_num(val2)}) :: {v :: Val | is_num(v)}:
+  match val1:
+  | v_num(num1):
+      match val2:
+      | v_num(num2):
+          v_num(num1 + num2)
+      | v_str(str): unreachable("not number")
+      | v_pair(l, r): unreachable("not number")
+      | v_null(): unreachable("not number")
+  | v_str(str): unreachable("not number")
+  | v_pair(l, r): unreachable("not number")
+  | v_null(): unreachable("not number")
+
+// concat is (string, string) -> string
+fun concat({val1 :: Val | is_str(val1)}, {val2 :: Val | is_str(val2)}) :: {v :: Val | is_str(v)}:
+  match val1:
+  | v_str(str1):
+      match val2:
+      | v_str(str2):
+          v_str(string_append(str1, str2))
+      | v_num(num): unreachable("not string")
+      | v_pair(l, r): unreachable("not string")
+      | v_null(): unreachable("not string")
+  | v_num(num): unreachable("not string")
+  | v_pair(l, r): unreachable("not string")
+  | v_null(): unreachable("not string")
+
+// union_elim is (string U number) -> any
+fun union_elim({val :: Val | is_str(val) || is_num(val)}) :: Val:
+  // val is (string U number)
+  if tagof(val) == #'number
+  | add(val, v_num(15)) // val narrowed to number
+  | concat(val, v_str(" world!")) // val narrowed to string 
+
+// union_intro_str is (string) -> any
+fun union_intro_str({val :: Val | is_str(val)}) :: Val:
+  // val is type string, passed to function taking (string U number)
+  union_elim(val)
+
+// union_intro_num is (number) -> any
+fun union_intro_num({val :: Val | is_str(val)}) :: Val:
+  // val is type number, passed to function taking (string U number)
+  union_elim(val)
+
+// union_elim_pair is ((string x number) U (number x string)) -> any
+fun union_elim_pair({val :: Val | (is_str(pair_left(val)) && is_num(pair_right(val))) || (is_num(pair_left(val)) && is_str(pair_right(val)))}):
+  if tagof(pair_left(val)) == #'string
+  | add(pair_right(val), v_num(15)) // val narrowed to (string x number)
+  | concat(pair_right(val), v_str(" world!")) // val narrowed to (number x string)
+
+// union_elim_pair is ((1 x number) U (2 x string)) -> any
+fun union_elim_tagged({val :: Val | (pair_left(val) == v_num(1) && is_num(pair_right(val))) || (pair_left(val) == v_num(2) && is_str(pair_right(val)))}):
+  if pair_left(val) == v_num(1)
+  | add(pair_right(val), v_num(15)) // val narrowed to (1 x number)
+  | concat(pair_right(val), v_str(" world!")) // val narrowed to (2 x string)
+
+fun str_tag({str :: String | str == "a" || str == "b"}) :: {s :: String | s == "a"}:
+  if str == "b":
+  | "a"
+  | str

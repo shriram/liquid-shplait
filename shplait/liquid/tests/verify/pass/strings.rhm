@@ -1,0 +1,51 @@
+#lang shplait/liquid
+
+// Strings, in Z3's theory of strings: literals, `==` and `!=`,
+// `string_length`, `string_append` (also in predicates), `substring`,
+// and `string_get`; strings in datatype fields and in options.
+fun str_tag({str :: String | str == "a" || str == "b"}) :: {s :: String | s == "a"}:
+  if str == "b"
+  | "a"
+  | str
+
+fun greet(name :: String) :: {s :: String | s == string_append("hello, ", name) && string_length(s) == 7 + string_length(name)}:
+  string_append("hello, ", name)
+
+fun safe_get(s :: String, {i :: Int | i >= 0 && i < string_length(s)}) :: Char:
+  string_get(s, i)
+
+fun first_of_greeting(name :: String) :: Char:
+  safe_get(greet(name), 0)
+
+fun h() :: {c :: Char | c == Char"h"}:
+  string_get("hello", 0)
+
+fun mid(s :: String) :: {t :: String | t == "ell"}:
+  substring("hello", 1, 4)
+
+fun nonempty({s :: String | s != ""}) :: {n :: Int | n > 0}:
+  string_length(s)
+
+fun uni() :: {s :: String | string_length(s) == 3}:
+  "λ\"\\"
+
+type Val
+| v_str(str :: {s :: String | string_length(s) > 0})
+| v_num(n :: Int)
+
+fun val_len(v :: Val) :: {n :: Int | n >= 0}:
+  match v
+  | v_str(s): string_length(s) - 1
+  | v_num(n): 0
+
+fun opt(o :: Optionof(String)) :: {n :: Int | n >= 0}:
+  match o
+  | none(): 0
+  | some(s): string_length(s)
+
+check:
+  str_tag("b")
+  ~is "a"
+check:
+  first_of_greeting("x")
+  ~is Char"h"
