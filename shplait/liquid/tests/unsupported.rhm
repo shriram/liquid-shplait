@@ -323,25 +323,14 @@ check_rejects:
     if a > b | a | b
   ~throws "a predicate may not call `max`"
 
-// string_measure_only
+// list_equality
 //
-// A String is not modeled, so it can be spoken about only through
-// `string_length`.  Comparing two strings in a refinement is an
-// error, not a silently-accepted claim.
+// Lists are not modeled, so `==` on them is an error, not a
+// silently-accepted claim.
 check_rejects:
-  fun greet({s :: String | s == "hi"}) :: String:
-    s
-  ~throws "is not supported on"
-
-// string_refinement
-//
-// String-typed refinements parse, but the checker's logic covers
-// integers only, so the declared predicate is an error — an
-// unexpressible claim must not be silently accepted.
-check_rejects:
-  fun greet({s :: String | s != ""}) :: String:
-    s
-  ~throws "cannot check"
+  fun same({l :: Listof(Int) | l == [1, 2]}) :: Listof(Int):
+    l
+  ~throws "`==` is not supported on a value of type `Listof(Int)`"
 
 // top_def_call
 //

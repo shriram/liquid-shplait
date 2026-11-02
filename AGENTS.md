@@ -38,8 +38,8 @@ The package `liquid-shplait` is a multi-collection package that adds
    one compile-time error.
 
 Every translated expression carries a sort (integer, Boolean, symbol,
-character, a module datatype, an option, a pair, or opaque for values the
-checker does not model), so sort errors
+character, string (Z3's theory of strings), a module datatype, an option,
+a pair, or opaque for values the checker does not model), so sort errors
 are reported by the checker rather than sent to Z3. Options and pairs are
 the parametric SMT datatypes `%Option` and `%Pair`, declared in the
 preamble; their constructors are written with their sorts

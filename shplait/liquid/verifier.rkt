@@ -68,13 +68,14 @@
 ;;   Anything else is an unsupported-construct ERROR when it appears
 ;;   where a translation is required.
 ;;
-;; Every translated expression carries a SORT (`int`, `bool`, `sym`, a
-;; datatype, a type variable, a flexible sort fixed by first use, or
-;; `opaque` for a value the checker does not model, such as a list or
-;; a string).  Sort mismatches are reported here rather than shipped
-;; to Z3 as malformed scripts.  An opaque value may be used only as
-;; the argument of a measure (`length`, `string_length`, `is_empty`,
-;; `is_cons`), which is what makes refinements such as
+;; Every translated expression carries a SORT (`int`, `bool`, `sym`,
+;; `char`, `str` (Z3's strings), a datatype, an option, a pair, a type
+;; variable, a flexible sort fixed by first use, or `opaque` for a value
+;; the checker does not model, such as a list or an array).  Sort
+;; mismatches are reported here rather than shipped to Z3 as malformed
+;; scripts.  An opaque value may be used only as the argument of a
+;; measure (`length`, `array_length`, `is_empty`, `is_cons`), which is
+;; what makes refinements such as
 ;; `{xs :: Listof(Int) | length(xs) > 0}` checkable.
 ;;
 ;; MUTABLE STATE.  Refinements over the heap are unsound without
@@ -340,7 +341,7 @@
 ;; Base types -> sorts
 ;; ======================================================================
 
-;; 'int, 'bool, 'sym, 'char, (list 'data T) for a datatype of this
+;; 'int, 'bool, 'sym, 'char, 'str, (list 'data T) for a datatype of this
 ;; module, (list 'opt S) for `Optionof`, (list 'pair A B) for a pair,
 ;; (list 'tvar a) for a type variable `?a`, or 'opaque (a value the
 ;; checker does not model).  An option's or a pair's component may be
@@ -358,6 +359,7 @@
     [(list 'Boolean) 'bool]
     [(list 'Symbol) 'sym]
     [(list 'Char) 'char]
+    [(list 'String) 'str]
     [(list (? symbol? n)) #:when (hash-ref (current-type-table) n #f) (list 'data n)]
     [(list (list 'op '?) (? symbol? a)) (list 'tvar a)]
     [(list 'Optionof (list 'parens (cons 'group inner))) (list 'opt (base-sort inner))]
@@ -438,6 +440,7 @@
         [(eq? s 'bool) "Bool"]
         [(eq? s 'sym) "Int"]                     ; symbols: distinct integer codes
         [(eq? s 'char) "Int"]                    ; characters: code points
+        [(eq? s 'str) "String"]                  ; Z3's theory of strings
         [(data-sort? s) (symbol->string (cadr s))]
         [(tvar-sort? s) (format "%tv_~a" (cadr s))]
         [(opt-sort? s) (format "(%Option ~a)" (component-smt (cadr s)))]
@@ -452,6 +455,21 @@
   (match ts
     [(list 'Boxof (list 'parens (cons 'group inner))) inner]
     [_ #f]))
+
+;; An SMT-LIB string literal.  Only printable ASCII appears as itself
+;; (a double quote doubled); every other character, and the backslash,
+;; is written \u{...}, so the script stays ASCII.
+(define (smt-string str)
+  (string-append
+   "\""
+   (apply string-append
+          (for/list ([ch (in-string str)])
+            (define n (char->integer ch))
+            (cond
+              [(char=? ch #\") "\"\""]
+              [(and (<= 32 n 126) (not (char=? ch #\\))) (string ch)]
+              [else (format "\\u{~x}" n)])))
+   "\""))
 
 ;; ======================================================================
 ;; Terms: an SMT string plus a sort, plus measures for opaque values
@@ -572,6 +590,7 @@
     [(eq? s 'bool) "a Boolean"]
     [(eq? s 'sym) "a symbol"]
     [(eq? s 'char) "a character"]
+    [(eq? s 'str) "a string"]
     [(data-sort? s) (format "a value of type `~a`" (cadr s))]
     [(opt-sort? s) "an option"]
     [(pair-sort? s) "a pair"]
@@ -741,6 +760,7 @@
     (thunk)))
 
 (define (int-of t who) (need-sort t 'int who))
+(define (str-of t who) (need-sort t 'str who))
 (define (bool-of t who) (need-sort t 'bool who))
 
 ;; ======================================================================
@@ -863,8 +883,10 @@
   (hash 'max 2 'min 2 'add1 1 'sub1 1 'is_even 1 'is_odd 1
         'length 1 'string_length 1 'array_length 1 'is_empty 1 'is_cons 1 'cons 2
         ;; built-ins whose result's size the checker knows
-        'make_array 2 'string_append 2 'substring 3 'append 2 'reverse 1
-        'map 2 'filter 2 'rest 1))
+        'make_array 2 'append 2 'reverse 1
+        'map 2 'filter 2 'rest 1
+        ;; strings
+        'string_append 2 'substring 3 'string_get 2))
 
 
 (define (builtin? name) (hash-ref builtin-arity name #f))
@@ -878,7 +900,7 @@
 ;; discipline).
 (define unmodeled-builtins
   '(first list_get foldl foldr member map2
-    string_get string_to_symbol to_string
+    string_to_symbol to_string
     map_get map_get_k map_set map_update map_remove map_delete map_keys
     print println
     boolean_to_syntax integer_to_syntax list_to_alts_syntax list_to_block_syntax
@@ -918,8 +940,18 @@
         'array_length '(Arrayof "an array")))
 
 (define (measure-of t0 mname)
-  ;; a flexible value measured is a list or a string: unmodeled
-  (define t (at-sort t0 'opaque))
+  (when (current-in-measure)
+    (unsup "a measure may not use `~a` (see Measure Functions in the guide)" mname))
+  ;; a flexible value measured is a string, or a list or array (not modeled)
+  (define t (at-sort t0 (if (eq? mname 'string_length) 'str 'opaque)))
+  (cond
+    [(eq? (T-sort t) 'str)
+     (unless (eq? mname 'string_length)
+       (unsup "`~a` applies to ~a, but was given a string" mname (second (hash-ref measure-domains mname))))
+     (format "(str.len ~a)" (T-smt t))]
+    [else (measure-of/opaque t mname)]))
+
+(define (measure-of/opaque t mname)
   (unless (eq? (T-sort t) 'opaque)
     (unsup "`~a` applies to ~a, but was given ~a"
            mname (second (hash-ref measure-domains mname '(#f "a list or a string")))
@@ -929,8 +961,6 @@
     (when (and dom ts (pair? ts) (not (eq? (car ts) (car dom))))
       (unsup "`~a` applies to ~a, but was given a value of type ~a"
              mname (second dom) (base-name ts))))
-  (when (current-in-measure)
-    (unsup "a measure may not use `~a` (see Measure Functions in the guide)" mname))
   (cond
     [(hash-ref (T-measures t) mname #f) => values]
     [(T-src t)
@@ -968,14 +998,22 @@
         ;; is right there; the size is kept non-negative.
         [(make_array)
          (sized 'array_length '(Arrayof) (nonneg (int-of (first arg-terms) "`make_array`")))]
+        ;; Strings, in Z3's theory of strings.  Out of range, `substring`
+        ;; and `string_get` raise an error instead of returning, so the
+        ;; value Z3 gives them there is never used.
         [(string_append)
-         (sized 'string_length '(String)
-                (sum-of (try-measure (first arg-terms) 'string_length)
-                        (try-measure (second arg-terms) 'string_length)))]
+         (t-of (format "(str.++ ~a ~a)" (str-of (first arg-terms) "`string_append`")
+                       (str-of (second arg-terms) "`string_append`"))
+               'str)]
         [(substring)
-         (sized 'string_length '(String)
-                (nonneg (format "(- ~a ~a)" (int-of (third arg-terms) "`substring`")
-                                (int-of (second arg-terms) "`substring`"))))]
+         (define start (int-of (second arg-terms) "`substring`"))
+         (t-of (format "(str.substr ~a ~a (- ~a ~a))" (str-of (first arg-terms) "`substring`")
+                       start (int-of (third arg-terms) "`substring`") start)
+               'str)]
+        [(string_get)
+         (t-of (format "(str.to_code (str.at ~a ~a))" (str-of (first arg-terms) "`string_get`")
+                       (int-of (second arg-terms) "`string_get`"))
+               'char)]
         [(append)
          (sized 'length '(Listof)
                 (sum-of (try-measure (first arg-terms) 'length)
@@ -1075,8 +1113,7 @@
                            (number->string head)))
                 rest)]
        [(string? head)
-        (values (t-opaque (hash 'string_length (number->string (string-length head))) #f)
-                rest)]
+        (values (t-of (smt-string head) 'str) rest)]
        [(memq head '(#t #true true)) (values (t-bool "true") rest)]
        ;; ---- character literal Char"x"
        [(and (eq? head 'Char) (pair? rest) (string? (car rest)) (= (string-length (car rest)) 1))
@@ -1124,7 +1161,7 @@
              (cond
                [(and (sort-smt sort) (equal? sort (T-sort b)))
                 (T (format "(ite ~a ~a ~a)" c (T-smt a) (T-smt b)) sort (hash) #f)]
-               ;; arms the checker does not model (strings, lists): a
+               ;; arms the checker does not model (lists, arrays): a
                ;; value whose measures are those of the arm taken
                [(and (eq? sort 'opaque) (eq? (T-sort b) 'opaque))
                 (define ms
@@ -1247,6 +1284,7 @@
      t]))
 
 (define predicate-callables '(max min add1 sub1 is_even is_odd length string_length array_length is_empty is_cons
+                              string_append
                               some none values fst snd is_some is_none))
 
 ;; A constructor application.  When every field's argument has an SMT
@@ -2280,6 +2318,13 @@
     [(? list?) (for/list ([x (in-list v)]) (expand-lets x env))]
     [_ v]))
 
+;; Z3 writes a string's other characters as \u{...}, which Racket's
+;; reader does not accept; \U with eight digits it does.
+(define (z3-escapes->racket text)
+  (regexp-replace* #px"\\\\u\\{([0-9a-fA-F]+)\\}" text
+                   (lambda (all hex)
+                     (string-append "\\U" (make-string (- 8 (string-length hex)) #\0) hex))))
+
 ;; A character code point as a `Char` literal.
 (define (render-char n)
   (if (and (exact-integer? n) (<= 0 n #x10FFFF) (not (<= #xD800 n #xDFFF)))
@@ -2299,7 +2344,7 @@
                        relevant)))
   (define sexp
     (with-handlers ([exn:fail? (lambda (e) #f)])
-      (read (open-input-string model-text))))
+      (read (open-input-string (z3-escapes->racket model-text)))))
   (define (render-value v [sort #f])
     (match v
       [(? number?)
@@ -2315,6 +2360,7 @@
       [(list '- (? number? n)) (format "-~a" n)]
       ['true "#true"]
       ['false "#false"]
+      [(? string?) (format "~s" v)]
       [(? symbol?)
        (cond
          [(hash-ref (current-ctor-table) v #f) (format "~a()" v)]
@@ -3254,7 +3300,7 @@
     ;; A top-level `def` is in scope for the groups after it: a refined
     ;; one contributes its predicate (already proved by def-obligations),
     ;; a plain one its right-hand side when that translates.  A value
-    ;; the checker does not model (a `String`, a list) is bound as an
+    ;; the checker does not model (a list, an array) is bound as an
     ;; opaque term, known through its measures.
     (define rdef-table (for/hash ([d (in-list rdefs)]) (values (rdef-name d) d)))
     (define env (hash))
