@@ -5,6 +5,28 @@ import:
 // Programs the refinement checker rejects: each has an obligation that does not hold.
 // Each case checks the rejection message.
 
+// Only the second arm writes 2, so the return claim fails on the first arm.
+check_rejects:
+  fun read_after_branch(flag :: Boolean, b :: Boxof({v :: Int | v >= 0})) :: {r :: Int | r == 2}:
+    if flag
+    | set_box(b, 1 + 2)
+    | set_box(b, 2)
+    unbox(b)
+  ~throws "return: the claim `r == 2` is violated"
+
+// The parameter action shadows the module function. A call through it
+// can change the box, even when the call goes through another function.
+check_rejects:
+  fun action() :: Int:
+    0
+  fun invoke(action :: () -> Int) :: Int:
+    action()
+  fun read_after_call(b :: Boxof({v :: Int | #true}), callback :: () -> Int) :: {r :: Int | r == 1}:
+    set_box(b, 1)
+    def ignored = invoke(callback)
+    unbox(b)
+  ~throws "return: the claim `r == 1` is violated"
+
 // assert_violated
 //
 // Nothing establishes `n > 0`.  (The call below then assumes it: only
@@ -1278,3 +1300,88 @@ check_rejects:
   fun f(s :: String) :: {b :: Boolean | b}:
     s != "é\n"
   ~throws "violated when s = \"é\\n\""
+
+// The increment makes the difference 1 for both spellings of the element refinement.
+check_rejects:
+  fun delta(b :: Boxof({v :: Int | #true})) :: {r :: Int | r == 0}:
+    def old = unbox(b)
+    set_box(b, old + 1)
+    unbox(b) - old
+  ~throws "return: the claim `r == 0` is violated"
+
+check_rejects:
+  fun delta(b :: Boxof({v :: Int | v == v})) :: {r :: Int | r == 0}:
+    def old = unbox(b)
+    set_box(b, old + 1)
+    unbox(b) - old
+  ~throws "return: the claim `r == 0` is violated"
+
+// If `a` and `b` are the same box writing `old + 1` through `b`
+// makes `unbox(a) - old` equal to 1 therefore the checker must reject `r == 0`
+check_rejects:
+  fun delta(a :: Boxof({v :: Int | #true}), b :: Boxof({v :: Int | #true}))
+      :: {r :: Int | r == 0}:
+    def old = unbox(a)
+    set_box(b, old + 1)
+    unbox(a) - old
+  ~throws "return: the claim `r == 0` is violated"
+
+// Only the second arm restores the saved value.
+check_rejects:
+  fun choose(flag :: Boolean, b :: Boxof({v :: Int | #true})) :: {r :: Int | r == 0}:
+    def old = unbox(b)
+    if flag
+    | set_box(b, old + 1)
+    | set_box(b, old)
+    unbox(b) - old
+  ~throws "return: the claim `r == 0` is violated"
+
+// The argument of next_value is read before the outer write of 1.
+check_rejects:
+  fun next_value({x :: Int | x == 1}) :: {r :: Int | r == 1}:
+    1
+  fun step(b :: Boxof({v :: Int | #true})) :: Void:
+    set_box(b, 0)
+    set_box(b, next_value(unbox(b)))
+  ~throws "call to `next_value`, argument 1: the claim `unbox(b) == 1` is violated"
+
+// The let reads the box on opposite sides of a nested write.
+check_rejects:
+  fun delta(b :: Boxof({v :: Int | #true})) :: {r :: Int | r == 0}:
+    let old = unbox(b):
+      set_box(b, old + 1)
+      unbox(b) - old
+  ~throws "return: the claim `r == 0` is violated"
+
+// A callback can write the box through a captured reference.
+check_rejects:
+  fun run(b :: Boxof({v :: Int | #true}), action :: () -> Void) :: {r :: Int | r == 1}:
+    set_box(b, 1)
+    action()
+    unbox(b)
+  def shared = box(0)
+  run(shared, fun (): set_box(shared, 2))
+  ~throws "return: the claim `r == 1` is violated"
+
+// The getter's formal b denotes the box passed as its argument, a.
+check_rejects:
+  fun get(b :: Boxof({v :: Int | #true})) :: {r :: Int | r == unbox(b)}:
+    unbox(b)
+  fun caller(a :: Boxof({v :: Int | #true}), b :: Boxof({v :: Int | #true}))
+      :: {r :: Int | r == 1}:
+    set_box(b, 1)
+    get(a)
+  caller(box(2), box(0))
+  ~throws "return: the claim `r == 1` is violated"
+
+// The callee's return predicate describes its post-write heap.
+check_rejects:
+  fun change(b :: Boxof({v :: Int | #true})) :: {r :: Int | r == unbox(b)}:
+    set_box(b, 2)
+    unbox(b)
+  fun caller(b :: Boxof({v :: Int | #true})) :: {r :: Int | r == 1}:
+    set_box(b, 1)
+    set_box(b, change(b))
+    unbox(b)
+  caller(box(0))
+  ~throws "return: the claim `r == 1` is violated"

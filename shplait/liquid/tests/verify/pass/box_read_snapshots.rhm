@@ -1,0 +1,90 @@
+#lang shplait/liquid
+
+// `old` saves the integer read before the write
+// After `set_box`, `unbox(b)` reads `old + 1` hence the difference is 1
+
+fun delta(b :: Boxof({v :: Int | #true})) :: {r :: Int | r == 1}:
+  def old = unbox(b)
+  set_box(b, old + 1)
+  unbox(b) - old
+
+check:
+  delta(box(7))
+  ~is 1
+
+// The read on the right of `set_box` still sees the same value as `old`.
+fun delta_equivalent(b :: Boxof({v :: Int | v == v})) :: {r :: Int | r == 1}:
+  def old = unbox(b)
+  set_box(b, unbox(b) + 1)
+  unbox(b) - old
+
+fun unchanged(b :: Boxof({v :: Int | #true})) :: {r :: Int | r == 0}:
+  def old = unbox(b)
+  unbox(b) - old
+
+// The write establishes the value of b in both aliasing configurations.
+fun bump_other(a :: Boxof({v :: Int | #true}), b :: Boxof({v :: Int | #true}))
+    :: {r :: Int | r == 1}:
+  def old = unbox(a)
+  set_box(b, old + 1)
+  unbox(b) - old
+
+check:
+  delta_equivalent(box(7))
+  ~is 1
+check:
+  unchanged(box(7))
+  ~is 0
+
+def same = box(3)
+check:
+  bump_other(same, same)
+  ~is 1
+check:
+  unbox(same)
+  ~is 4
+
+def first_box = box(3)
+def other_box = box(8)
+check:
+  bump_other(first_box, other_box)
+  ~is 1
+check:
+  unbox(first_box)
+  ~is 3
+check:
+  unbox(other_box)
+  ~is 4
+
+// Both reads in the subtraction observe the box after the call.
+fun change(b :: Boxof({v :: Int | #true})) :: {r :: Int | r == 0}:
+  set_box(b, unbox(b) + 1)
+  0
+
+fun after_call(b :: Boxof({v :: Int | #true})) :: {r :: Int | r == 0}:
+  change(b) + (unbox(b) - unbox(b))
+
+check:
+  after_call(box(7))
+  ~is 0
+
+fun write_either(b :: Boxof({v :: Int | v >= 0}), flag :: Boolean) :: {r :: Int | r == 2}:
+  if flag
+  | set_box(b, 2)
+  | set_box(b, 2)
+  unbox(b)
+
+fun increment(n :: Int) :: Int:
+  n + 1
+
+fun across_increment(b :: Boxof({v :: Int | v >= 0})) :: {r :: Int | r == 1}:
+  set_box(b, 1)
+  def ignored = increment(7)
+  unbox(b)
+
+check:
+  write_either(box(0), #false)
+  ~is 2
+check:
+  across_increment(box(0))
+  ~is 1

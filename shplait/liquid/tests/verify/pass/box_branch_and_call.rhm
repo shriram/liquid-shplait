@@ -1,0 +1,32 @@
+#lang shplait/liquid
+
+// Both arms write 2
+// The checker must prove this even though the expressions on the two right-hand sides differ
+fun read_after_branch(flag :: Boolean, b :: Boxof({v :: Int | v >= 0})) :: {r :: Int | r == 2}:
+  if flag
+  | set_box(b, 1 + 1)
+  | set_box(b, 2)
+  unbox(b)
+
+check:
+  read_after_branch(#true, box(0))
+  ~is 2
+check:
+  read_after_branch(#false, box(0))
+  ~is 2
+
+fun identity(n :: Int) :: Int:
+  n
+
+fun outer_identity(n :: Int) :: Int:
+  identity(n)
+
+// Neither outer_identity nor identity writes a box so b still holds 1 after the call
+fun read_after_call(b :: Boxof({v :: Int | v >= 0})) :: {r :: Int | r == 1}:
+  set_box(b, 1)
+  def ignored = outer_identity(7)
+  unbox(b)
+
+check:
+  read_after_call(box(0))
+  ~is 1
