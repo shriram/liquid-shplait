@@ -27,6 +27,15 @@ check_rejects:
     unbox(b)
   ~throws "return: the claim `r == 1` is violated"
 
+// The name max can denote a callback. Its return does not establish the
+// contents of a box that the callback may have changed.
+check_rejects:
+  fun invoke(b :: Boxof({v :: Int | v >= 0}), max :: (Int, Int) -> Int) :: {r :: Int | r == 4}:
+    set_box(b, 4)
+    def ignored = max(1, 2)
+    unbox(b)
+  ~throws "return: the claim `r == 4` is violated"
+
 // assert_violated
 //
 // Nothing establishes `n > 0`.  (The call below then assumes it: only

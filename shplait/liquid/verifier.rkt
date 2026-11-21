@@ -101,7 +101,8 @@
 ;; Known limitation: calls are not allowed inside refinement
 ;; predicates, except the builtins and measures listed above.
 
-(require shrubbery/parse
+(require (for-template (prefix-in sh: shplait))
+         shrubbery/parse
          racket/treelist)
 
 (provide verify_module verify_interaction)
@@ -130,10 +131,32 @@
 (define (stx-datum x)
   (if (syntax? x) (syntax->datum x) x))
 
+;; The term translator consumes datums. Keep binding information for calls
+;; to numeric primitives so the effect scan can distinguish an imported or
+;; shadowed name from the Shplait primitive. Key by the argument-list token
+;; itself: two occurrences with identical text may have different bindings.
+(define current-numeric-calls (make-parameter #f))
+(define numeric-primitives
+  (hash 'max #'sh:max 'min #'sh:min 'add1 #'sh:add1 'sub1 #'sh:sub1
+        'is_even #'sh:is_even 'is_odd #'sh:is_odd))
+
+(define (record-numeric-calls! stx datum)
+  (define ts (and (pair? datum) (syntax? stx) (syntax->list stx)))
+  (when ts
+    (for ([t (in-list ts)] [d (in-list datum)]
+          [prev (in-list (cons #f ts))])
+      (when (and (pair? d) (eq? (car d) 'parens) (identifier? prev))
+        (define prim (hash-ref numeric-primitives (syntax-e prev) #f))
+        (when (and prim (free-identifier=? prev prim))
+          (hash-set! (current-numeric-calls) d (syntax-e prev))))
+      (record-numeric-calls! t d))))
+
 ;; A group-context syntax (a body, a predicate, a rhs) normalizes to a
 ;; list of token-lists, one per group.
 (define (stx->groups stx)
-  (match (stx-datum stx)
+  (define datum (stx-datum stx))
+  (when (current-numeric-calls) (record-numeric-calls! stx datum))
+  (match datum
     [(cons 'multi gs)
      (for/list ([g (in-list gs)])
        (match g
@@ -1532,7 +1555,7 @@
      (define result-reads
        (and (fn-ret callee)
             (read-only-function? callee)
-            (callee-box-reads callee arg-groups (fn-ret callee))))
+            (callee-box-reads callee arg-groups (fn-ret callee) env)))
      (define (assume-ret! t)
        (when (and (fn-ret callee) (not (trivially-true? (fn-ret callee))))
          (match-define (refinement bound pred) (fn-ret callee))
@@ -2729,24 +2752,29 @@
 ;; Resolve module calls only when the bindings at the call site are known.
 ;; Inside a nested binder the conservative scan recognizes primitives only.
 (define (may-write-box? toks [env #f])
-  (define (read-only-call? name)
+  (define (read-only-call? name args)
     (and env (symbol? name)
          (not (hash-has-key? env name))
          (not (hash-has-key? (current-failed-locals) name))
          (let ([f (hash-ref (current-sig-table) name #f)])
-           (and f (read-only-function? f)))))
+           (if f
+               (read-only-function? f)
+               (and (not (set-member? (current-top-def-names) name))
+                    (current-numeric-calls)
+                    (eq? name (hash-ref (current-numeric-calls) args #f)))))))
   (define (inside t [scope env])
     (match t
       [(cons 'group ts) (may-write-box? ts scope)]
       [(cons 'parens groups) (ormap (lambda (g) (inside g scope)) groups)]
       [(cons _ children) (ormap (lambda (child) (inside child #f)) children)]
       [_ #f]))
-  (for/or ([t (in-list toks)] [prev (in-list (cons #f toks))])
+  (for/or ([t (in-list toks)] [prev (in-list (cons #f toks))]
+           [before-name (in-list (list* #f #f toks))])
     (or (inside t)
         (and (pair? t) (eq? (car t) 'parens) prev
              (not (and (pair? prev) (eq? (car prev) 'op)))
              (not (memq prev '(if cond match fun values box unbox cons first rest Array)))
-             (not (read-only-call? prev))))))
+             (or (equal? before-name '(op |.|)) (not (read-only-call? prev t)))))))
 
 ;; If every possible write ends the group, the guard and RHS reads all see
 ;; the incoming heap. In other compound groups the call scan does not model
@@ -2777,7 +2805,7 @@
           target)]
     [(list 'if guard ... (list 'alts (list 'block (cons 'group left))
                                      (list 'block (cons 'group right))))
-     (and (not (may-write-box? guard))
+     (and (not (may-write-box? guard env))
           (let ([target (definite-write-target left env)])
             (and target (eq? target (definite-write-target right env)) target)))]
     [_ #f]))
@@ -3167,7 +3195,7 @@
                 (define arg-env (callee-arg-env callee actuals env))
                 (define goal
                   (bool-of (callee-predicate-term callee pred (hash-set arg-env bound actual-t)
-                                                   (callee-box-reads callee actuals (param-refinement cp)))
+                                                   (callee-box-reads callee actuals (param-refinement cp) env))
                            "a parameter refinement"))
                 (add-obl!
                  (obligation (fn-name f)
@@ -3178,10 +3206,10 @@
 ;; Relate a callee formal to the actual reference only when a stable
 ;; caller heap is available. Scalar argument evaluation must not contain
 ;; an effect that could change that snapshot.
-(define (callee-box-reads callee actuals r)
+(define (callee-box-reads callee actuals r env)
   (define names (flatten (refinement-pred-toks r)))
   (and (current-unbox-cache) (memq 'unbox names)
-       (not (ormap may-write-box? actuals))
+       (for/and ([a (in-list actuals)]) (not (may-write-box? a env)))
        (for/hash ([p (in-list (fn-params callee))] [a (in-list actuals)]
                   #:when (and (param-box-class p) (memq (param-name p) names))
                   [name (in-value (box-arg-name a))]
@@ -3577,7 +3605,7 @@
                      (define arg-env (callee-arg-env callee actuals call-env))
                      (define goal
                        (bool-of (callee-predicate-term callee pred (hash-set arg-env bound actual-t)
-                                                   (callee-box-reads callee actuals (param-refinement cp)))
+                                                   (callee-box-reads callee actuals (param-refinement cp) call-env))
                                 "a parameter refinement"))
                      (add-obl!
                       (obligation anchor-name
@@ -3645,7 +3673,8 @@
       (hash-update h (second e)
                    (lambda (l) (append l (list (cons (first e) (third e)))))
                    '())))
-  (parameterize ([current-type-table type-table]
+  (parameterize ([current-numeric-calls (make-hasheq)]
+                 [current-type-table type-table]
                  [current-ctor-type ctor-type]
                  [current-ctor-table ctor-table]
                  [current-symbol-codes (make-hash)]

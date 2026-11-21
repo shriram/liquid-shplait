@@ -30,3 +30,46 @@ fun read_after_call(b :: Boxof({v :: Int | v >= 0})) :: {r :: Int | r == 1}:
 check:
   read_after_call(box(0))
   ~is 1
+
+// Numeric primitives preserve the current box contents.
+fun across_max(b :: Boxof({v :: Int | v >= 0})) :: {r :: Int | r == 4}:
+  set_box(b, 4)
+  def ignored = max(1, 2)
+  unbox(b)
+
+check:
+  across_max(box(0))
+  ~is 4
+
+// The scalar argument is computed without changing the box read by the precondition.
+fun copy_int(n :: Int) :: {r :: Int | r == n}:
+  n
+
+fun equal_to_contents(b :: Boxof({v :: Int | v >= 0}), {n :: Int | n == unbox(b)}) :: Int:
+  n
+
+fun pass_contents(b :: Boxof({v :: Int | v >= 0})) :: Int:
+  set_box(b, 4)
+  equal_to_contents(b, copy_int(4))
+
+check:
+  pass_contents(box(0))
+  ~is 4
+
+// Both writes establish 2, and computing the guard preserves the incoming heap.
+fun positive(n :: Int) :: Boolean:
+  n > 0
+
+fun after_guard(b :: Boxof({v :: Int | v >= 0}), n :: Int) :: {r :: Int | r == 2}:
+  if positive(n)
+  | set_box(b, 2)
+  | set_box(b, 2)
+  unbox(b)
+
+check:
+  after_guard(box(0), 1)
+  ~is 2
+
+check:
+  after_guard(box(0), 0)
+  ~is 2
