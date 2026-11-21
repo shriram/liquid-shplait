@@ -101,7 +101,8 @@
 ;; Known limitation: calls are not allowed inside refinement
 ;; predicates, except the builtins and measures listed above.
 
-(require shrubbery/parse
+(require (for-template (prefix-in sh: shplait))
+         shrubbery/parse
          racket/treelist)
 
 (provide verify_module verify_interaction)
@@ -130,10 +131,32 @@
 (define (stx-datum x)
   (if (syntax? x) (syntax->datum x) x))
 
+;; The term translator consumes datums. Keep binding information for calls
+;; to numeric primitives so the effect scan can distinguish an imported or
+;; shadowed name from the Shplait primitive. Key by the argument-list token
+;; itself: two occurrences with identical text may have different bindings.
+(define current-numeric-calls (make-parameter #f))
+(define numeric-primitives
+  (hash 'max #'sh:max 'min #'sh:min 'add1 #'sh:add1 'sub1 #'sh:sub1
+        'is_even #'sh:is_even 'is_odd #'sh:is_odd))
+
+(define (record-numeric-calls! stx datum)
+  (define ts (and (pair? datum) (syntax? stx) (syntax->list stx)))
+  (when ts
+    (for ([t (in-list ts)] [d (in-list datum)]
+          [prev (in-list (cons #f ts))])
+      (when (and (pair? d) (eq? (car d) 'parens) (identifier? prev))
+        (define prim (hash-ref numeric-primitives (syntax-e prev) #f))
+        (when (and prim (free-identifier=? prev prim))
+          (hash-set! (current-numeric-calls) d (syntax-e prev))))
+      (record-numeric-calls! t d))))
+
 ;; A group-context syntax (a body, a predicate, a rhs) normalizes to a
 ;; list of token-lists, one per group.
 (define (stx->groups stx)
-  (match (stx-datum stx)
+  (define datum (stx-datum stx))
+  (when (current-numeric-calls) (record-numeric-calls! stx datum))
+  (match datum
     [(cons 'multi gs)
      (for/list ([g (in-list gs)])
        (match g
@@ -1053,7 +1076,15 @@
 ;; ======================================================================
 
 (define (expr->term toks env)
-  (define-values (result rest) (parse-expr toks 0 env))
+  ;; Within a group of unknown effect order, a read-only subexpression
+  ;; still has one stable heap for its own evaluation.
+  (define-values (result rest)
+    (parameterize ([current-unbox-cache
+                    (or (current-unbox-cache)
+                        (and (not (hash-empty? (current-box-params)))
+                             (not (may-write-box? toks))
+                             (make-hash)))])
+      (parse-expr toks 0 env)))
   (unless (null? rest)
     (unsup "cannot analyze expression near `~a`" (render-toks rest)))
   result)
@@ -1519,13 +1550,18 @@
      ;; The callee's return refinement, assumed of the result.  Over a
      ;; result the checker does not model it is best-effort: a predicate
      ;; that only a measure could state is dropped, which assumes less.
+     ;; A read-only callee returns in the same heap. Capture actual box
+     ;; reads now, even when a polymorphic result will be forced later.
+     (define result-reads
+       (and (fn-ret callee)
+            (read-only-function? callee)
+            (callee-box-reads callee arg-groups (fn-ret callee) env)))
      (define (assume-ret! t)
        (when (and (fn-ret callee) (not (trivially-true? (fn-ret callee))))
          (match-define (refinement bound pred) (fn-ret callee))
          (define (assume!)
            (push-extra! (guarded-assert
-                         (bool-of (parameterize ([current-allow-calls #f])
-                                    (expr->term pred (hash-set callee-env bound t)))
+                         (bool-of (callee-predicate-term callee pred (hash-set callee-env bound t) result-reads)
                                   "a return refinement"))))
          (if (sort-smt (T-sort t))
              (assume!)
@@ -2683,24 +2719,96 @@
 ;; Per-function checking
 ;; ======================================================================
 
-;; Does this statement hand a box to a module function, which could
-;; write to it?  (`set_box` itself updates the cache where it is
-;; checked, so it does not need to be caught here.)
-(define (passes-box-to-call? stx box-names)
-  (let loop ([x stx])
-    (cond
-      [(not (pair? x)) #f]
-      [else
-       (match x
-         [(list-rest (? symbol? name) (cons 'parens groups) rest)
-          (or (and (hash-ref (current-sig-table) name #f)
-                   (for/or ([g (in-list groups)])
-                     (match g
-                       [(list 'group (? symbol? v)) (and (memq v box-names) #t)]
-                       [_ #f])))
-              (for/or ([g (in-list groups)]) (loop g))
-              (loop rest))]
-         [_ (or (loop (car x)) (loop (cdr x)))])])))
+(define current-read-only-cache (make-parameter #f))
+
+;; A call preserves the heap only if every call it can make does too.
+;; A name bound in the function may denote a callback, even if a
+;; read-only module function has the same name.
+(define (read-only-function? f)
+  (define cache (current-read-only-cache))
+  (hash-ref cache (fn-name f)
+    (lambda ()
+      ;; Treat a call back into the current chain as a possible write.
+      (hash-set! cache (fn-name f) #f)
+      (define groups (fn-body-groups f))
+      (define read-only?
+        (with-handlers ([unsupported? (lambda (_) #f)])
+          (define formals (for/hash ([p (in-list (fn-params f))])
+                            (values (param-name p) #t)))
+          (define bound
+            (for/fold ([env formals]) ([g (in-list groups)])
+              (match g
+                [(cons 'def _)
+                 (define-values (kind name rhs) (classify-statement g))
+                 (for/fold ([e env]) ([n (in-list (if (eq? kind 'defvalues) name (list name)))])
+                   (hash-set e n #t))]
+                [(app fun-def-parts (list (? symbol? name) _ _)) (hash-set env name #t)]
+                [_ env])))
+          (parameterize ([current-failed-locals (hash)])
+            (for/and ([g (in-list groups)]) (not (may-write-box? g bound))))))
+      (hash-set! cache (fn-name f) read-only?)
+      read-only?)))
+
+;; Resolve module calls only when the bindings at the call site are known.
+;; Inside a nested binder the conservative scan recognizes primitives only.
+(define (may-write-box? toks [env #f])
+  (define (read-only-call? name args)
+    (and env (symbol? name)
+         (not (hash-has-key? env name))
+         (not (hash-has-key? (current-failed-locals) name))
+         (let ([f (hash-ref (current-sig-table) name #f)])
+           (if f
+               (read-only-function? f)
+               (and (not (set-member? (current-top-def-names) name))
+                    (current-numeric-calls)
+                    (eq? name (hash-ref (current-numeric-calls) args #f)))))))
+  (define (inside t [scope env])
+    (match t
+      [(cons 'group ts) (may-write-box? ts scope)]
+      [(cons 'parens groups) (ormap (lambda (g) (inside g scope)) groups)]
+      [(cons _ children) (ormap (lambda (child) (inside child #f)) children)]
+      [_ #f]))
+  (for/or ([t (in-list toks)] [prev (in-list (cons #f toks))]
+           [before-name (in-list (list* #f #f toks))])
+    (or (inside t)
+        (and (pair? t) (eq? (car t) 'parens) prev
+             (not (and (pair? prev) (eq? (car prev) 'op)))
+             (not (memq prev '(if cond match fun values box unbox cons first rest Array)))
+             (or (equal? before-name '(op |.|)) (not (read-only-call? prev t)))))))
+
+;; If every possible write ends the group, the guard and RHS reads all see
+;; the incoming heap. In other compound groups the call scan does not model
+;; evaluation order; give each read a fresh value while checking that group.
+(define (writes-at-end? toks)
+  (define (pure? ts) (not (may-write-box? ts)))
+  (match toks
+    [(list (? symbol?) (cons 'parens args))
+     (for/and ([g (in-list args)]) (match g [(cons 'group ts) (pure? ts)] [_ #f]))]
+    [(list 'if guard ... (list 'alts arms ...))
+     (and (pure? guard)
+          (for/and ([arm (in-list arms)])
+            (match (block-groups/safe arm)
+              [(list before ... last)
+               (and (andmap pure? before)
+                    (or (pure? last) (writes-at-end? last)))]
+              [_ #f])))]
+    [_ #f]))
+
+;; Forward only from a store to a known parameter, with an RHS that can
+;; be evaluated in the incoming heap. A syntactic proof of coverage is
+;; necessary: the scan can omit an untranslatable guard.
+(define (definite-write-target toks env)
+  (match toks
+    [(list 'set_box (list 'parens (list 'group target) (cons 'group rhs)))
+     (and (hash-has-key? (current-box-params) target)
+          (not (may-write-box? rhs env))
+          target)]
+    [(list 'if guard ... (list 'alts (list 'block (cons 'group left))
+                                     (list 'block (cons 'group right))))
+     (and (not (may-write-box? guard env))
+          (let ([target (definite-write-target left env)])
+            (and target (eq? target (definite-write-target right env)) target)))]
+    [_ #f]))
 
 ;; Statement classification for a multi-statement body.
 ;; A local `def`'s name bound to `t`: a constant equal to it, named
@@ -2765,7 +2873,22 @@
                  [current-extras prefix]
                  [current-failed-locals failed-locals]
                  [current-param-env base-env])
-    (define box-names (hash-keys (current-box-params)))
+    (define cache (current-unbox-cache))
+    (define (check-calls! toks env)
+      (define effect? (and (not (hash-empty? (current-box-params))) (may-write-box? toks env)))
+      (define target (and effect? (definite-write-target toks env)))
+      (define tail? (and effect? (or target (writes-at-end? toks))))
+      ;; Reinstall the cache for each new group. When effects can interleave
+      ;; with reads, neither the scan nor the subsequent result translation
+      ;; may identify two reads just because their box names match.
+      (current-unbox-cache (and (or (not effect?) tail?) cache))
+      (define written (emit-call-obligations! f toks env add-obl! add-err! target))
+      (when effect?
+        (hash-clear! cache)
+        (when written (hash-set! cache target written))
+        ;; A second translation of the same compound group computes locals
+        ;; or the return term; it must not use its own post-state as input.
+        (current-unbox-cache #f)))
 
     ;; ---- declarations for the parameters the checker models
     (for ([p (in-list (fn-params f))] #:unless (param-box-class p))
@@ -2829,7 +2952,7 @@
                            (add-err! "statement" (unsupported-why e))
                            env)])
           (define-values (kind name rhs) (classify-statement st))
-          (emit-call-obligations! f st env add-obl! add-err! prefix)
+          (check-calls! st env)
           (define env*
             (cond
               [(eq? kind 'def)
@@ -2874,12 +2997,10 @@
               [else
                (statement-assumption! st env)
                env]))
-          (when (passes-box-to-call? st box-names)
-            (hash-clear! (current-unbox-cache)))
           env*)))
 
     ;; ---- obligations from the result expression
-    (emit-call-obligations! f result env add-obl! add-err! prefix)
+    (check-calls! result env)
 
     ;; ---- RETURN obligation.  Skipped when a parameter predicate could
     ;; not be translated: proving the result without that assumption
@@ -2926,7 +3047,7 @@
     [_ (void)]))
 
 ;; Call-site and set_box obligations discovered in one statement.
-(define (emit-call-obligations! f toks outer-env add-obl! add-err! prefix)
+(define (emit-call-obligations! f toks outer-env add-obl! add-err! target)
   (define scan-errors (box '()))
   (define calls (parameterize ([current-scan-errors scan-errors]) (find-calls toks outer-env)))
   (define reported (remove-duplicates (reverse (unbox scan-errors))))
@@ -2936,12 +3057,37 @@
   (define (add-err*! label why)
     (unless (for/or ([r (in-list reported)]) (string-suffix? why r))
       (add-err! label why)))
-  (for ([c (in-list calls)])
+  (define (check c [remember? #f])
     (match-define (list callee-name actuals path-conds env) c)
     (parameterize ([current-path (conj (current-path) (conj* path-conds))])
-      (emit-call-obligation! f callee-name actuals path-conds env add-obl! add-err*!))))
+      (emit-call-obligation! f callee-name actuals path-conds env add-obl! add-err*! remember?)))
+  (cond
+    [target
+     ;; The scan lists the enclosing call before argument calls. Check RHS
+     ;; preconditions in the incoming heap, then check the terminal writes.
+     (define-values (stores others) (partition (lambda (c) (eq? (first c) 'set_box)) calls))
+     (for-each check others)
+     (define writes
+       (for/list ([c (in-list stores)])
+         (check c (match (second c) [(list (list name) _) (eq? name target)] [_ #f]))))
+     ;; Every arm writes the target. At the join its contents must be one
+     ;; of the values written on a possible path. A guard the scan could
+     ;; not translate leaves both arms possible.
+     (and (pair? writes) (andmap T? writes)
+          (cond
+            [(andmap (lambda (v) (equal? v (car writes))) (cdr writes)) (car writes)]
+            [else
+             (define name (fresh-name (format "~a_content" target)))
+             (define sort (T-sort (car writes)))
+             (push-prefix! (format "(declare-const ~a ~a)" name (sort-smt sort)))
+             (define alternatives
+               (for/list ([c (in-list stores)] [v (in-list writes)])
+                 (conj (conj* (third c)) (format "(= ~a ~a)" name (T-smt v)))))
+             (push-prefix! (format "(assert (or ~a))" (string-join alternatives " ")))
+             (t-of name sort (string->symbol name))]))]
+    [else (for-each check calls) #f]))
 
-(define (emit-call-obligation! f callee-name actuals path-conds env add-obl! add-err!)
+(define (emit-call-obligation! f callee-name actuals path-conds env add-obl! add-err! remember?)
   (cond
     ;; a call through a local binding (a function defined inside this
     ;; one, a function-valued parameter or `let`) is not a call to the
@@ -2969,35 +3115,33 @@
           [(not p)
            (add-err! (format "`set_box` on `~a`" box-name)
                      "the target of `set_box` must be a `Boxof` parameter of this function")]
-          [(and (param-refinement p) (not (trivially-true? (param-refinement p))))
-           (match-define (refinement bound pred) (param-refinement p))
-           (with-handlers ([unsupported?
-                            (lambda (e)
-                              (add-err! (format "`set_box` on `~a`" box-name)
-                                        (unsupported-why e)))])
-             ;; the value's constants stay function-level (the cache
-             ;; below reuses them), but a never-returning call in it
-             ;; excuses only this obligation
-             (define-values (value-t returns)
-               (with-divergence (lambda () (expr->term value-toks env))))
-             ;; the element predicate speaks about the parameters, as at
-             ;; `unbox`, not about whatever a `let` binds at the call
-             (define goal
-               (bool-of (parameterize ([current-allow-calls #f])
-                          (expr->term pred (hash-set (current-param-env) bound value-t)))
-                        "a Boxof element refinement"))
-             (add-obl!
-              (obligation (fn-name f)
-                          (format "set_box on `~a`" box-name)
-                          (assemble (cons returns path-conds) (format "(assert (not ~a))" goal))
-                          (render-claim pred)))
-             ;; After the write this box holds exactly this value, and
-             ;; any OTHER box may be an alias of it, so its cached
-             ;; contents are no longer known.
-             (when (current-unbox-cache)
-               (hash-clear! (current-unbox-cache))
-               (hash-set! (current-unbox-cache) box-name value-t)))]
-          [else (void)])]
+          [else
+           (define r (param-refinement p))
+           (define check-element? (and r (not (trivially-true? r))))
+           ;; Only explicit element types have modeled reads. If there is
+           ;; no invariant to prove, an unmodeled RHS is a valid write.
+           (and (or check-element?
+                  (and remember? r (sort-smt (base-sort (param-base p)))))
+              (with-handlers ([unsupported?
+                               (lambda (e)
+                                 (when check-element?
+                                   (add-err! (format "`set_box` on `~a`" box-name)
+                                             (unsupported-why e)))
+                                 #f)])
+                (define-values (value-t returns)
+                  (with-divergence (lambda () (expr->term value-toks env))))
+                (when check-element?
+                  (match-define (refinement bound pred) r)
+                  (define goal
+                    (bool-of (parameterize ([current-allow-calls #f])
+                               (expr->term pred (hash-set (current-param-env) bound value-t)))
+                             "a Boxof element refinement"))
+                  (add-obl!
+                   (obligation (fn-name f) (format "set_box on `~a`" box-name)
+                               (assemble (cons returns path-conds) (format "(assert (not ~a))" goal))
+                               (render-claim pred))))
+                (define v (at-declared value-t (param-base p)))
+                (and remember? (T-smt v) (equal? (T-sort v) (base-sort (param-base p))) v)))])]
        [_ (add-err! "`set_box`"
                     "the target of `set_box` must be a `Boxof` parameter named directly")])]
     ;; constructing a datatype value: each refined field is an obligation
@@ -3050,14 +3194,40 @@
                 (define actual-t (at-declared (expr->term actual env) (param-base cp) #:in-caller? #t))
                 (define arg-env (callee-arg-env callee actuals env))
                 (define goal
-                  (bool-of (parameterize ([current-allow-calls #f])
-                             (expr->term pred (hash-set arg-env bound actual-t)))
+                  (bool-of (callee-predicate-term callee pred (hash-set arg-env bound actual-t)
+                                                   (callee-box-reads callee actuals (param-refinement cp) env))
                            "a parameter refinement"))
                 (add-obl!
                  (obligation (fn-name f)
                              (format "call to `~a`, argument ~a" callee-name j)
                              (assemble path-conds (format "(assert (not ~a))" goal))
                              (render-claim pred (call-subst callee actuals bound j)))))))]))]))
+
+;; Relate a callee formal to the actual reference only when a stable
+;; caller heap is available. Scalar argument evaluation must not contain
+;; an effect that could change that snapshot.
+(define (callee-box-reads callee actuals r env)
+  (define names (flatten (refinement-pred-toks r)))
+  (and (current-unbox-cache) (memq 'unbox names)
+       (for/and ([a (in-list actuals)]) (not (may-write-box? a env)))
+       (for/hash ([p (in-list (fn-params callee))] [a (in-list actuals)]
+                  #:when (and (param-box-class p) (memq (param-name p) names))
+                  [name (in-value (box-arg-name a))]
+                  #:when name
+                  [caller (in-value (hash-ref (current-box-params) name #f))]
+                  #:when (and caller (sort-smt (base-sort (param-base caller)))))
+         (values (param-name p) (unbox-term name)))))
+
+;; A callee's box formals are in a different scope. At an unknown heap
+;; use a fresh symbolic contents for each formal; do not import caller
+;; facts by spelling or assume a dependent element predicate in that scope.
+(define (callee-predicate-term callee pred env reads)
+  (parameterize ([current-allow-calls #f]
+                 [current-unbox-cache (if reads (hash-copy reads) (make-hash))]
+                 [current-box-params
+                  (for/hash ([p (in-list (fn-params callee))] #:when (param-box-class p))
+                    (values (param-name p) (struct-copy param p [refinement #f])))])
+    (expr->term pred env)))
 
 ;; A callee's refinement may mention the callee's other parameters
 ;; (`{r :: Int | r <= c}`).  At a call site those names stand for the
@@ -3434,8 +3604,8 @@
                      (define actual-t (at-declared (expr->term actual call-env) (param-base cp) #:in-caller? #t))
                      (define arg-env (callee-arg-env callee actuals call-env))
                      (define goal
-                       (bool-of (parameterize ([current-allow-calls #f])
-                                  (expr->term pred (hash-set arg-env bound actual-t)))
+                       (bool-of (callee-predicate-term callee pred (hash-set arg-env bound actual-t)
+                                                   (callee-box-reads callee actuals (param-refinement cp) call-env))
                                 "a parameter refinement"))
                      (add-obl!
                       (obligation anchor-name
@@ -3503,7 +3673,8 @@
       (hash-update h (second e)
                    (lambda (l) (append l (list (cons (first e) (third e)))))
                    '())))
-  (parameterize ([current-type-table type-table]
+  (parameterize ([current-numeric-calls (make-hasheq)]
+                 [current-type-table type-table]
                  [current-ctor-type ctor-type]
                  [current-ctor-table ctor-table]
                  [current-symbol-codes (make-hash)]
@@ -3723,7 +3894,8 @@
     (cond [(pair? fns) (fn-name (car fns))]
           [(pair? rdefs) (rdef-name (car rdefs))]
           [else 'module]))
-  (parameterize ([current-sig-table
+  (parameterize ([current-read-only-cache (make-hash)]
+                 [current-sig-table
                   (for/hash ([f (in-list fns)])
                     (values (fn-name f) f))]
                  [current-ctor-table (current-ctor-table)]
